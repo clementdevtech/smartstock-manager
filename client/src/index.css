@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Global Styles for SmartStock Manager Pro */
+body {
+  font-family: 'Inter', sans-serif;
+  background-color: #f9fafb;
+  margin: 0;
+  padding: 0;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #a0aec0;
+  border-radius: 8px;
+}
+
+button {
+  transition: all 0.2s ease-in-out;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+input, select, textarea {
+  border-radius: 6px;
+  border: 1px solid #cbd5e0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+h1, h2, h3, h4, h5 {
+  font-weight: 600;
+}
+
+.table-header {
+  background-color: #f1f5f9;
+  font-weight: 500;
+}
+
+
+@keyframes slideUp {
+  0% { transform: translateY(20px); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-slideUp {
+  animation: slideUp 0.3s ease-out forwards;
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.25s ease-in forwards;
+}
+
+
+
+.card {
+  @apply bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6;
+}
+
+.section-title {
+  @apply text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4;
+}
+
+.label {
+  @apply text-gray-500 dark:text-gray-400;
+}
+
+.value {
+  @apply font-medium text-gray-800 dark:text-gray-100;
+}
+
+.input {
+  @apply w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-100;
+}
+
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg;
+}
+
+.btn-secondary {
+  @apply bg-gray-200 hover:bg-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100 px-4 py-2 rounded-lg;
+}
+
+.btn-danger {
+  @apply bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg;
+}
