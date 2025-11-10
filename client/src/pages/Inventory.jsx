@@ -35,20 +35,26 @@ const Inventory = () => {
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
   // ✅ Fetch all items
-  const fetchItems = async () => {
-    try {
-      setLoading(true);
-      const res = await axios.get("/api/items", { headers });
-      const data = res.data || [];
-      setItems(data);
-      setFiltered(data);
-      setLoading(false);
-    } catch (err) {
-      console.error(err);
-      setToast({ message: "Failed to fetch items", type: "error" });
-      setLoading(false);
-    }
-  };
+const fetchItems = async () => {
+  try {
+    setLoading(true);
+    const res = await axios.get("/api/items", { headers });
+    const data = Array.isArray(res.data)
+      ? res.data
+      : Array.isArray(res.data.items)
+      ? res.data.items
+      : [];
+
+    setItems(data);
+    setFiltered(data);
+    setLoading(false);
+  } catch (err) {
+    console.error(err);
+    setToast({ message: "Failed to fetch items", type: "error" });
+    setLoading(false);
+  }
+};
+
 
   // ✅ Add or Edit item
   const handleSubmit = async (e) => {
