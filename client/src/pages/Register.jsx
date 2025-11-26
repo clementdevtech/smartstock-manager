@@ -1,9 +1,8 @@
-// Register.jsx
 import { useState, useRef, useEffect, useContext } from "react";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2, Check, X } from "lucide-react";
 import { useForm } from "react-hook-form";
-import { AuthContext } from "@/contexts/AuthContext";
+import { AuthContext } from "../context/AuthContext";
 import {
   sendVerificationEmail,
   verifyEmailCode,
@@ -13,7 +12,7 @@ import {
   register as registerApi,
   checkEmailExists,
   validateInviteCode,
-} from "@/services/authService";
+} from "../services/auth";
 
 // Small helper: format product key as XXXX-XXXX-XXXX-XXXX
 const formatProductKey = (value) => {

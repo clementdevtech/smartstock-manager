@@ -2,9 +2,9 @@ import { useContext, useState } from "react";
 import { useForm } from "react-hook-form";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
-import { AuthContext } from "@/contexts/AuthContext";
-import { login } from "@/services/authService";
-import { toast } from "@/components/ui/use-toast";
+import { AuthContext } from "../context/AuthContext";
+import { login } from "../services/auth";
+import { toast } from "../components/ui/use-toast";
 
 import {
   Card,
@@ -12,9 +12,9 @@ import {
   CardTitle,
   CardContent,
   CardFooter,
-} from "@/components/ui/card";
+} from "../components/ui/card";
 
-import { Button } from "@/components/ui/button";
+import { Button } from "../components/ui/button";
 
 export default function Login() {
   const { loginUser } = useContext(AuthContext);
