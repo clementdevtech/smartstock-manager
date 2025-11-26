@@ -1,11 +1,94 @@
+/* --- TAILWIND BASE --- */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Global Styles for SmartStock Manager Pro */
+/* --- SHADCN VARIABLE THEME (FULLY MODIFIED THEME PALETTE) --- */
+@layer base {
+  :root {
+    /* Light Mode */
+    --background: 210 40% 98%;             /* soft gray-blue */
+    --foreground: 215 25% 15%;             /* dark slate */
+
+    --card: 0 0% 100%;                     /* white */
+    --card-foreground: 215 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+
+    --primary: 155 70% 45%;                /* emerald brand */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 20% 92%;              /* soft gray */
+    --secondary-foreground: 215 25% 20%;
+
+    --muted: 215 20% 92%;
+    --muted-foreground: 215 15% 40%;
+
+    --accent: 155 70% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 20% 85%;                 /* subtle light border */
+    --input: 215 20% 96%;
+    --ring: 155 70% 40%;
+
+    --chart-1: 155 70% 45%;
+    --chart-2: 200 70% 50%;
+    --chart-3: 270 65% 55%;
+    --chart-4: 45 95% 55%;
+    --chart-5: 15 85% 60%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* Dark Mode */
+    --background: 220 30% 7%;              /* deep slate */
+    --foreground: 0 0% 98%;                /* bright white */
+
+    --card: 220 25% 10%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 220 30% 7%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 155 70% 45%;                /* emerald stays consistent */
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 220 25% 16%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 220 25% 16%;
+    --muted-foreground: 220 10% 70%;
+
+    --accent: 155 70% 45%;
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 20% 20%;
+    --input: 220 20% 16%;
+    --ring: 155 70% 45%;
+  }
+
+  /* Global border color */
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+}
+
+/* --- GLOBAL STYLES --- */
 body {
   font-family: 'Inter', sans-serif;
-  background-color: #f9fafb;
   margin: 0;
   padding: 0;
 }
@@ -14,38 +97,51 @@ body {
   width: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: #a0aec0;
+  background-color: #94a3b8; /* slate-400 */
   border-radius: 8px;
 }
 
 button {
   transition: all 0.2s ease-in-out;
 }
-
 button:hover {
   opacity: 0.9;
 }
 
-input, select, textarea {
+input,
+select,
+textarea {
   border-radius: 6px;
-  border: 1px solid #cbd5e0;
+  border: 1px solid hsl(var(--input));
   padding: 0.5rem 0.75rem;
   font-size: 0.95rem;
+  background-color: hsl(var(--input));
+  color: hsl(var(--foreground));
 }
 
-h1, h2, h3, h4, h5 {
+h1,
+h2,
+h3,
+h4,
+h5 {
   font-weight: 600;
 }
 
 .table-header {
-  background-color: #f1f5f9;
+  background-color: hsl(var(--muted));
   font-weight: 500;
 }
 
-
+/* --- ANIMATIONS --- */
 @keyframes slideUp {
-  0% { transform: translateY(20px); opacity: 0; }
-  100% { transform: translateY(0); opacity: 1; }
+  0% {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 @keyframes fadeIn {
@@ -56,41 +152,62 @@ h1, h2, h3, h4, h5 {
 .animate-slideUp {
   animation: slideUp 0.3s ease-out forwards;
 }
-
 .animate-fadeIn {
   animation: fadeIn 0.25s ease-in forwards;
 }
 
-
-
+/* --- COMPONENT STYLES --- */
 .card {
-  @apply bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-6;
+  @apply rounded-2xl shadow-sm p-6;
+  background-color: hsl(var(--card));
+  color: hsl(var(--card-foreground));
+  border: 1px solid hsl(var(--border));
 }
 
 .section-title {
-  @apply text-lg font-semibold text-gray-800 dark:text-gray-100 mb-4;
+  @apply text-lg font-semibold mb-4;
+  color: hsl(var(--foreground));
 }
 
 .label {
-  @apply text-gray-500 dark:text-gray-400;
+  color: hsl(var(--muted-foreground));
 }
-
 .value {
-  @apply font-medium text-gray-800 dark:text-gray-100;
+  color: hsl(var(--foreground));
+  font-weight: 500;
 }
 
 .input {
-  @apply w-full p-2 border rounded-md bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-100;
+  @apply w-full p-2 rounded-md border;
+  background-color: hsl(var(--input));
+  color: hsl(var(--foreground));
 }
 
 .btn-primary {
-  @apply bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg;
+  @apply px-4 py-2 rounded-lg;
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+.btn-primary:hover {
+  background-color: hsl(var(--primary-foreground));
+  color: hsl(var(--primary));
 }
 
 .btn-secondary {
-  @apply bg-gray-200 hover:bg-gray-300 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100 px-4 py-2 rounded-lg;
+  @apply px-4 py-2 rounded-lg;
+  background-color: hsl(var(--secondary));
+  color: hsl(var(--secondary-foreground));
+}
+.btn-secondary:hover {
+  background-color: hsl(var(--secondary-foreground));
+  color: hsl(var(--secondary));
 }
 
 .btn-danger {
-  @apply bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg;
+  @apply px-4 py-2 rounded-lg;
+  background-color: hsl(var(--destructive));
+  color: hsl(var(--destructive-foreground));
+}
+.btn-danger:hover {
+  opacity: 0.9;
 }

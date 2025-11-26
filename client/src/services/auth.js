@@ -59,3 +59,9 @@ export const validateInviteCode = async (code) => {
   const res = await api("/api/auth/validate-invite", "POST", { code });
   return res; // { valid: true/false }
 };
+
+//login user
+export const login = async (email, password) => {
+  const res = await api("/api/auth/login", "POST", { email, password });
+  return res; 
+};

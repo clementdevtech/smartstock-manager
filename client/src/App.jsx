@@ -12,7 +12,8 @@ const POS = lazy(() => import("./pages/POS"));
 const Reports = lazy(() => import("./pages/Reports"));
 const Backup = lazy(() => import("./pages/Backup"));
 const Settings = lazy(() => import("./pages/Settings"));
-const Login = lazy(() => import("./pages/Login")); // ✅ Add login
+const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
 
 // 🌀 Shimmer loader
 const LoadingScreen = () => (
@@ -89,6 +90,7 @@ function App() {
 
               {/* 🔑 Public Pages */}
               <Route path="/login" element={<Login />} />
+              <Route path="/register" element={<Register />} />
 
               {/* ⚠️ 404 */}
               <Route

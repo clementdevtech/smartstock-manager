@@ -1,3 +1,4 @@
+// Navbar.jsx
 import React, { useState, useEffect, useContext } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { Menu, X, LogOut } from "lucide-react";
@@ -9,24 +10,24 @@ const Navbar = () => {
   const [darkMode, setDarkMode] = useState(false);
   const navigate = useNavigate();
 
-  // 🔐 Access auth context
   const { user, logoutUser } = useContext(AuthContext);
 
-  // Load dark mode preference
+  // Load dark mode from localStorage on startup
   useEffect(() => {
-    const storedMode = localStorage.getItem("darkMode") === "true";
-    setDarkMode(storedMode);
-    document.documentElement.classList.toggle("dark", storedMode);
+    const storedMode = localStorage.getItem("darkMode");
+    const initialMode = storedMode === "true";
+
+    setDarkMode(initialMode);
+    document.documentElement.classList.toggle("dark", initialMode);
   }, []);
 
-  // Update theme + store preference
+  // Sync theme when darkMode changes
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
     localStorage.setItem("darkMode", darkMode);
   }, [darkMode]);
 
-  // 🚀 Role-based menu
-  // Admin gets everything; Staff gets limited access
+  // Menu items
   const baseLinks = [
     { name: "Inventory", path: "/inventory" },
     { name: "Sales", path: "/sales" },
@@ -39,8 +40,9 @@ const Navbar = () => {
     { name: "Settings", path: "/settings" },
   ];
 
-  // Final nav depending on role
-  const navLinks = user?.role === "admin" ? [...baseLinks, ...adminOnlyLinks] : baseLinks;
+  const navLinks = user?.role === "admin"
+    ? [...baseLinks, ...adminOnlyLinks]
+    : baseLinks;
 
   const handleLogout = () => {
     logoutUser();
@@ -50,6 +52,7 @@ const Navbar = () => {
   return (
     <nav className="sticky top-0 z-50 bg-white dark:bg-gray-900 shadow-md border-b border-gray-100 dark:border-gray-700">
       <div className="max-w-7xl mx-auto px-4 py-3 flex justify-between items-center">
+        
         {/* Logo */}
         <div className="flex items-center gap-2">
           <div className="bg-blue-600 text-white w-10 h-10 flex items-center justify-center rounded-xl font-bold text-lg shadow-md">
@@ -81,21 +84,20 @@ const Navbar = () => {
 
         {/* Right Controls */}
         <div className="flex items-center gap-3">
+
           {/* Dark Mode */}
           <div className="flex items-center gap-2">
             <ToggleSwitch checked={darkMode} onChange={setDarkMode} />
             <span
-              className={`flex items-center gap-1 text-sm font-medium transition-all duration-300 ${
-                darkMode
-                  ? "text-yellow-400"
-                  : "text-gray-700 dark:text-gray-300"
+              className={`text-sm font-medium transition-all duration-300 ${
+                darkMode ? "text-yellow-400" : "text-gray-700 dark:text-gray-300"
               }`}
             >
-              {darkMode ? "🌙 Dark" : "☀️ Light"}
+              {darkMode ? "Dark Mode" : "Light Mode"}
             </span>
           </div>
 
-          {/* Logout Button */}
+          {/* Logout */}
           {user && (
             <button
               onClick={handleLogout}
@@ -106,13 +108,14 @@ const Navbar = () => {
             </button>
           )}
 
-          {/* Mobile Menu Button */}
+          {/* Mobile Menu */}
           <button
             className="md:hidden p-2 text-gray-700 dark:text-gray-200"
             onClick={() => setIsOpen(!isOpen)}
           >
             {isOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
+
         </div>
       </div>
 
