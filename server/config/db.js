@@ -1,8 +1,3 @@
-/**
- * server/config/db.js
- * MongoDB connection helper for SmartStock Manager Pro backend.
- */
-
 const mongoose = require('mongoose');
 
 const connectDB = async () => {

@@ -1,10 +1,20 @@
-// server/routes/authRoutes.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { registerUser, loginUser } = require('../controllers/authController');
+const {
+  sendVerification,
+  verifyCode,
+  checkEmail,
+  registerUser,
+  validateInvite,
+  loginUser
+} = require("../controllers/authController");
 
-// Public Routes
-router.post('/register', registerUser);
+router.post("/send-verification", sendVerification);
+router.post("/verify-code", verifyCode);
+router.post("/check-email", checkEmail);
+router.post("/validate-invite", validateInvite);
+router.post("/register", registerUser);
+
 router.post('/login', loginUser);
 
 module.exports = router;

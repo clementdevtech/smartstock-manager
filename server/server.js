@@ -1,36 +1,3 @@
-/**
- * server/server.js
- * Entry point for SmartStock Manager Pro backend.
- *
- * Features included:
- * - Express server
- * - MongoDB (Mongoose) connection using dotenv (see server/config/db.js)
- * - CORS and JSON body parsing
- * - Basic logging middleware
- * - Routes mounted for /api/items, /api/sales, /api/users, /api/backup
- * - Simple error handler
- *
- * Later files you'll receive (one at a time as requested):
- *  - config/db.js
- *  - models: User.js, Item.js, Sale.js
- *  - routes: inventoryRoutes.js, salesRoutes.js, userRoutes.js, backupRoutes.js
- *  - controllers for each resource
- *
- * Usage:
- *  - Create a .env file in server/:
- *      MONGO_URI=mongodb+srv://<user>:<pass>@cluster0.mongodb.net/smartstock?retryWrites=true&w=majority
- *      JWT_SECRET=your_jwt_secret_here
- *      PORT=4000
- *
- *  - Install dependencies in server/:
- *      npm init -y
- *      npm i express mongoose dotenv cors morgan bcryptjs jsonwebtoken multer fs-extra
- *
- *  - Run:
- *      node server.js
- *    (or use nodemon for dev)
- */
-
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
@@ -46,6 +13,8 @@ const inventoryRoutes = require('./routes/inventoryRoutes');
 const salesRoutes = require('./routes/salesRoutes');
 const userRoutes = require('./routes/userRoutes');
 const backupRoutes = require('./routes/backupRoutes');
+const authRoutes = require('./routes/authRoutes');
+const userController = require('./routes/userRoutes');
 
 const app = express();
 
@@ -69,10 +38,12 @@ app.use((req, res, next) => {
 });
 
 // API routes
-app.use('/api/items', inventoryRoutes);   // Inventory CRUD
-app.use('/api/sales', salesRoutes);       // Sales / POS endpoints
-app.use('/api/users', userRoutes);         // Auth: sign-up / sign-in
-app.use('/api/backup', backupRoutes);     // Backup & restore endpoints
+app.use('/api/items', inventoryRoutes);
+app.use('/api/sales', salesRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/backup', backupRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/user', userController);
 
 // Health check
 app.get('/api/health', (req, res) => {

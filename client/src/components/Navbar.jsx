@@ -1,12 +1,16 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useContext } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { Menu, X, LogOut } from "lucide-react";
 import ToggleSwitch from "./ToggleSwitch";
+import { AuthContext } from "../context/AuthContext";
 
 const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const navigate = useNavigate();
+
+  // 🔐 Access auth context
+  const { user, logoutUser } = useContext(AuthContext);
 
   // Load dark mode preference
   useEffect(() => {
@@ -21,20 +25,26 @@ const Navbar = () => {
     localStorage.setItem("darkMode", darkMode);
   }, [darkMode]);
 
-  // 🧭 Added “Point of Sale” route here
-  const navLinks = [
+  // 🚀 Role-based menu
+  // Admin gets everything; Staff gets limited access
+  const baseLinks = [
     { name: "Inventory", path: "/inventory" },
     { name: "Sales", path: "/sales" },
-    { name: "Point of Sale", path: "/pos" }, // ✅ NEW POS PAGE
+    { name: "Point of Sale", path: "/pos" },
+  ];
+
+  const adminOnlyLinks = [
     { name: "Reports", path: "/reports" },
     { name: "Backup", path: "/backup" },
     { name: "Settings", path: "/settings" },
   ];
 
+  // Final nav depending on role
+  const navLinks = user?.role === "admin" ? [...baseLinks, ...adminOnlyLinks] : baseLinks;
+
   const handleLogout = () => {
-    localStorage.removeItem("token");
-    navigate("/");
-    window.location.reload();
+    logoutUser();
+    navigate("/login");
   };
 
   return (
@@ -71,36 +81,30 @@ const Navbar = () => {
 
         {/* Right Controls */}
         <div className="flex items-center gap-3">
-          {/* 🔄 Dark Mode Switch + Label */}
+          {/* Dark Mode */}
           <div className="flex items-center gap-2">
             <ToggleSwitch checked={darkMode} onChange={setDarkMode} />
             <span
               className={`flex items-center gap-1 text-sm font-medium transition-all duration-300 ${
                 darkMode
-                  ? "text-yellow-400 translate-x-0 opacity-100"
-                  : "text-gray-700 dark:text-gray-300 translate-x-0 opacity-100"
+                  ? "text-yellow-400"
+                  : "text-gray-700 dark:text-gray-300"
               }`}
             >
-              {darkMode ? (
-                <>
-                  🌙 <span className="hidden sm:inline">Dark</span>
-                </>
-              ) : (
-                <>
-                  ☀️ <span className="hidden sm:inline">Light</span>
-                </>
-              )}
+              {darkMode ? "🌙 Dark" : "☀️ Light"}
             </span>
           </div>
 
           {/* Logout Button */}
-          <button
-            onClick={handleLogout}
-            className="hidden md:flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg shadow-md transition"
-          >
-            <LogOut size={16} />
-            Logout
-          </button>
+          {user && (
+            <button
+              onClick={handleLogout}
+              className="hidden md:flex items-center gap-1 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg shadow-md transition"
+            >
+              <LogOut size={16} />
+              Logout
+            </button>
+          )}
 
           {/* Mobile Menu Button */}
           <button
@@ -131,12 +135,15 @@ const Navbar = () => {
               {link.name}
             </NavLink>
           ))}
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center gap-2 px-6 py-3 text-red-600 hover:bg-red-50 dark:hover:bg-gray-800 font-medium text-sm"
-          >
-            <LogOut size={16} /> Logout
-          </button>
+
+          {user && (
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2 px-6 py-3 text-red-600 hover:bg-red-50 dark:hover:bg-gray-800 font-medium text-sm"
+            >
+              <LogOut size={16} /> Logout
+            </button>
+          )}
         </div>
       )}
     </nav>

@@ -1,8 +1,3 @@
-/**
- * server/routes/userRoutes.js
- * Routes for user authentication & profile in SmartStock Manager Pro
- */
-
 const express = require('express');
 const router = express.Router();
 
