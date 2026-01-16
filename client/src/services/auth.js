@@ -1,67 +1,62 @@
-// services/authService.js
 import { api } from "../utils/api";
 
-// Send verification code to email (server should save code & expire)
+// ✔ Send verification email
 export const sendVerificationEmail = async (email) => {
-  const res = await api("/api/auth/send-verification", "POST", { email });
-  return res;
+  return await api("/api/auth/send-verification-email", "POST", { email });
 };
 
-// Verify the code
+// ✔ Resend verification code (reuses same endpoint)
+export const resendCode = async (email) => {
+  return await api("/api/auth/send-verification-email", "POST", { email });
+};
+
+// ✔ Verify email code
 export const verifyEmailCode = async (email, code) => {
-  const res = await api("/api/auth/verify-code", "POST", { email, code });
-  return res; // { verified: true }
+  return await api("/api/auth/verify-email-code", "POST", { email, code });
 };
 
-// Check if email exists (used to show warning)
+// ✔ Check if email exists  (correct route = GET)
 export const checkEmailExists = async (email) => {
-  const res = await api("/api/auth/check-email", "POST", { email });
-  return res; // { exists: boolean }
+  return await api(`/api/auth/check-email?email=${encodeURIComponent(email)}`, "GET");
 };
 
-// Validate product key (server checks DB)
+// ✔ Validate product key  (GET is correct)
 export const validateProductKey = async (key) => {
-  const res = await api("/api/keys/validate", "POST", { key });
-  return res; // { valid: true/false }
+  return await api(`/api/auth/validate-key?productKey=${encodeURIComponent(key)}`, "GET");
 };
 
-// Assign product key to an email/user when email verified
+// ✔ Assign product key
 export const assignProductKeyToEmail = async ({ email, productKey }) => {
-  const res = await api("/api/keys/assign", "POST", { email, productKey });
-  return res; // { success: true }
+  return await api("/api/auth/assign-key", "POST", { email, productKey });
 };
 
-// Upload logo file (multipart)
+// ✔ Upload store logo
 export const uploadLogo = async (file) => {
-  // Use formdata and a different endpoint that accepts multipart
   const form = new FormData();
   form.append("file", file);
 
-  // Use fetch directly because api() sets Content-Type JSON
-  const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
+  const API_BASE = import.meta.env.VITE_API_URL;
   const res = await fetch(`${API_BASE}/api/upload/logo`, {
     method: "POST",
     body: form,
   });
+
   const json = await res.json();
   if (!res.ok) throw new Error(json.message || "Upload failed");
-  return json; // { url: "https://..." }
+  return json;
 };
 
-// Final registration
+// ✔ Register user
 export const register = async (payload) => {
-  const res = await api("/api/auth/register", "POST", payload);
-  return res; // { user, token, productKey? }
+  return await api("/api/auth/register", "POST", payload);
 };
 
-// invite code validation
+// ✔ Validate invite code  (should be GET)
 export const validateInviteCode = async (code) => {
-  const res = await api("/api/auth/validate-invite", "POST", { code });
-  return res; // { valid: true/false }
+  return await api(`/api/auth/validate-invite?code=${encodeURIComponent(code)}`, "GET");
 };
 
-//login user
+// ✔ Login user
 export const login = async (email, password) => {
-  const res = await api("/api/auth/login", "POST", { email, password });
-  return res; 
+  return await api("/api/auth/login", "POST", { email, password });
 };

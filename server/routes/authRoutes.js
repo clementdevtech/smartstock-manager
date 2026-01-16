@@ -1,20 +1,29 @@
 const express = require("express");
 const router = express.Router();
-const {
-  sendVerification,
-  verifyCode,
-  checkEmail,
-  registerUser,
-  validateInvite,
-  loginUser
-} = require("../controllers/authController");
+const auth = require("../controllers/authController");
 
-router.post("/send-verification", sendVerification);
-router.post("/verify-code", verifyCode);
-router.post("/check-email", checkEmail);
-router.post("/validate-invite", validateInvite);
-router.post("/register", registerUser);
+// EMAIL
+router.get("/check-email", auth.checkEmailExists);
+router.post("/send-verification-email", auth.sendVerificationEmail);
+router.post("/verify-email-code", auth.verifyEmailCode);
 
-router.post('/login', loginUser);
+// PASSWORD RESET (NEW + REQUIRED)
+router.post("/request-password-reset", auth.requestPasswordReset);
+router.post("/resend-code", auth.resendResetCode);
+router.post("/verify-reset-code", auth.verifyResetCode);
+router.post("/reset-password", auth.resetPassword);
+
+// PRODUCT KEY
+router.get("/validate-key", auth.validateProductKey);
+router.post("/assign-key", auth.assignProductKeyToEmail);
+
+// INVITE
+router.get("/validate-invite", auth.validateInviteCode);
+
+// REGISTER
+router.post("/register", auth.register);
+
+// LOGIN
+router.post("/login", auth.loginUser);
 
 module.exports = router;

@@ -43,7 +43,7 @@ app.use('/api/sales', salesRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/auth', authRoutes);
-app.use('/api/user', userController);
+app.use('/api/user', userController)
 
 // Health check
 app.get('/api/health', (req, res) => {

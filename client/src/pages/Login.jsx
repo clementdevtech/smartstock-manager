@@ -31,11 +31,12 @@ export default function Login() {
     try {
       const res = await login(data.email, data.password);
 
+      // --- LOGIN SUCCESS ---
       loginUser(res.user);
 
       toast({
-        title: "Welcome back",
-        description: "Login successful!",
+        title: "Welcome back!",
+        description: `Logged in as ${res.user.email}`,
       });
 
       if (!remember) {
@@ -43,10 +44,19 @@ export default function Login() {
       }
 
       window.location.href = "/dashboard";
+
     } catch (err) {
+      console.error("Login error:", err);
+
+      // Extract backend error message
+      const backendMessage =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Login failed";
+
       toast({
         title: "Login failed",
-        description: err.message || "Invalid email or password",
+        description: backendMessage,
         variant: "destructive",
       });
     }
@@ -101,7 +111,7 @@ export default function Login() {
                   Password
                 </label>
 
-                {/* Show/Hide Password */}
+                {/* Toggle Password */}
                 <div
                   className="absolute right-3 top-3 text-muted-foreground cursor-pointer"
                   onClick={() => setShowPass(!showPass)}

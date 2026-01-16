@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useContext } from "react";
 import { motion } from "framer-motion";
-import { Eye, EyeOff, Loader2, Check, X } from "lucide-react";
+import { Eye, EyeOff, Check, X } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { AuthContext } from "../context/AuthContext";
+
 import {
   sendVerificationEmail,
   verifyEmailCode,
@@ -14,11 +15,18 @@ import {
   validateInviteCode,
 } from "../services/auth";
 
-// Small helper: format product key as XXXX-XXXX-XXXX-XXXX
+// Format product key into 6-6-6 (matches DB keys like 6Y3ZP3-A87KPM-C3C0DG)
 const formatProductKey = (value) => {
-  const cleaned = (value || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  const blocks = cleaned.match(/.{1,4}/g);
-  return blocks ? blocks.join("-").substring(0, 19) : "";
+  const cleaned = (value || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase()
+    .slice(0, 18); // ensure at most 18 raw chars
+
+  const parts = [];
+  if (cleaned.length > 0) parts.push(cleaned.slice(0, 6));
+  if (cleaned.length > 6) parts.push(cleaned.slice(6, 12));
+  if (cleaned.length > 12) parts.push(cleaned.slice(12, 18));
+  return parts.join("-");
 };
 
 // Password strength evaluator
@@ -36,202 +44,222 @@ const evaluateStrength = (pw) => {
 
 export default function Register() {
   const { loginUser } = useContext(AuthContext);
-  const {
-    register,
-    handleSubmit,
-    watch,
-    setValue,
-    getValues,
-    formState: { errors },
-  } = useForm({ mode: "onChange" });
+  const { register, handleSubmit, setValue, getValues } = useForm({
+    mode: "onChange",
+  });
 
-  // Multi-step
+  // Steps & loading
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
 
-  // fields managed separately for some instant UI needs
+  // Product key state
   const [productKey, setProductKey] = useState("");
-  const [productKeyStatus, setProductKeyStatus] = useState(null); // null | 'valid' | 'invalid' | 'checking'
-  const [emailExists, setEmailExists] = useState(null); // null|true|false
+  const [productKeyStatus, setProductKeyStatus] = useState(null); // null | 'checking' | 'valid' | 'invalid'
+  const productKeyRef = useRef(null);
+
+  // Email (controlled) + existence check
+  const [emailInput, setEmailInput] = useState("");
+  const [emailExists, setEmailExists] = useState(null);
+
+  // Verification & logo
   const [verificationSent, setVerificationSent] = useState(false);
   const [verificationLoading, setVerificationLoading] = useState(false);
   const [verificationSuccess, setVerificationSuccess] = useState(false);
+
   const [logoPreview, setLogoPreview] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
+
+  // Password & UI toggles
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [confirmVisible, setConfirmVisible] = useState(false);
-  const [passwordStrength, setPasswordStrength] = useState({ label: "empty", score: 0 });
-  const [inviteValid, setInviteValid] = useState(null); // null | true | false
-  const [phoneCountry, setPhoneCountry] = useState({ code: "+1", iso: "US" });
-  const [captchaToken, setCaptchaToken] = useState(null); // placeholder for recaptcha
+  const [passwordStrength, setPasswordStrength] = useState({
+    score: 0,
+    label: "empty",
+  });
 
-  // watch password for strength & checklist
-  const password = watch("password", "");
+  const [inviteValid, setInviteValid] = useState(null);
+
+  // update initial strength (kept minimal to avoid caret issues)
   useEffect(() => {
-    setPasswordStrength(evaluateStrength(password));
-  }, [password]);
+    const pw = getValues("password") || "";
+    setPasswordStrength(evaluateStrength(pw));
+  }, []);
 
-  // PRODUCT KEY HANDLING
+  // --- PRODUCT KEY INPUT HANDLER (preserves caret) ---
   const onProductKeyChange = async (e) => {
-    const formatted = formatProductKey(e.target.value);
+    const input = e.target;
+    const raw = input.value;
+    const oldCursor = input.selectionStart ?? raw.length;
+
+    // Format
+    const formatted = formatProductKey(raw);
+
+    // Update local state + react-hook-form value
     setProductKey(formatted);
     setValue("productKey", formatted);
-    setProductKeyStatus("checking");
 
-    // quick client-side length check
-    if (!formatted || formatted.replace(/-/g, "").length < 16) {
+    // After render, restore caret position correctly.
+    // We'll calculate how many dashes existed before the old cursor and after formatting.
+    requestAnimationFrame(() => {
+      try {
+        // Count non-alphanum removed before cursor in raw:
+        const leftRaw = raw.slice(0, oldCursor);
+        const cleanedLeft = leftRaw.replace(/[^A-Za-z0-9]/g, "");
+        // New cursor position = cleanedLeft length plus number of dashes inserted before that position
+        let newCursor = cleanedLeft.length;
+        // Insert dashes positions: after 6 and after 12 raw chars
+        if (newCursor > 6) newCursor += 1;
+        if (newCursor > 12) newCursor += 1;
+        const inputEl = productKeyRef.current;
+        if (inputEl && typeof inputEl.setSelectionRange === "function")
+          inputEl.setSelectionRange(newCursor, newCursor);
+      } catch {
+        /* ignore caret restore errors */
+      }
+    });
+
+    // Validate only when raw cleaned length reaches 18 (complete key)
+    const cleaned = formatted.replace(/-/g, "");
+    if (cleaned.length < 18) {
       setProductKeyStatus(null);
       return;
     }
 
+    // Validate key (show checking state)
+    setProductKeyStatus("checking");
     try {
-      const res = await validateProductKey(formatted.replace(/-/g, ""));
-      setProductKeyStatus(res.valid ? "valid" : "invalid");
-    } catch (err) {
+      // backend normalizes, you can send formatted or cleaned; backend will handle normalization
+      const res = await validateProductKey(formatted);
+      setProductKeyStatus(res && res.valid ? "valid" : "invalid");
+    } catch {
       setProductKeyStatus("invalid");
     }
   };
 
-  // EMAIL EXISTENCE CHECK (debounced)
-  const emailRef = useRef();
+  // --- EMAIL DEBOUNCE (controlled input) ---
   useEffect(() => {
     const id = setTimeout(async () => {
-      const email = getValues("email");
-      if (!email || !email.includes("@")) {
+      if (!emailInput || !emailInput.includes("@")) {
         setEmailExists(null);
         return;
       }
       try {
-        const exists = await checkEmailExists(email);
-        setEmailExists(exists.exists);
+        const res = await checkEmailExists(emailInput);
+        setEmailExists(res.exists);
       } catch {
         setEmailExists(null);
       }
-    }, 650);
+    }, 600);
     return () => clearTimeout(id);
-  }, [watch("email")]);
+  }, [emailInput]);
 
-  // INVITE CODE CHECK (if user typed)
+  // Invite code check
   const onInviteChange = async (e) => {
-    const v = e.target.value.trim();
-    setValue("inviteCode", v);
-    if (!v) return setInviteValid(null);
+    const code = e.target.value.trim();
+    setValue("inviteCode", code);
+    if (!code) return setInviteValid(null);
     try {
-      const ok = await validateInviteCode(v);
-      setInviteValid(ok.valid);
+      const res = await validateInviteCode(code);
+      setInviteValid(res.valid);
     } catch {
       setInviteValid(false);
     }
   };
 
-  // LOGO UPLOAD PREVIEW
+  // Logo preview
   const handleLogoChange = (e) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setLogoFile(f);
-    const url = URL.createObjectURL(f);
-    setLogoPreview(url);
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLogoFile(file);
+    setLogoPreview(URL.createObjectURL(file));
   };
 
-  // SEND EMAIL VERIFICATION CODE
+  // Send verification email
   const handleSendVerification = async () => {
-    const email = getValues("email");
-    if (!email || !email.includes("@")) {
-      alert("Enter a valid email first.");
-      return;
-    }
+    const email = getValues("email") || emailInput;
+    if (!email) return alert("Enter your email first.");
     setVerificationLoading(true);
     try {
       await sendVerificationEmail(email);
       setVerificationSent(true);
       setVerificationSuccess(false);
-      alert("Verification code sent to your email. Check inbox/spam.");
-    } catch (err) {
-      alert(err.message || "Failed to send verification.");
+    } catch {
+      alert("Failed to send verification email.");
     } finally {
       setVerificationLoading(false);
     }
   };
 
-  // VERIFY CODE entered by user
+  // Verify code
   const handleVerifyCode = async (code) => {
-    setVerificationLoading(true);
     try {
-      const email = getValues("email");
+      setVerificationLoading(true);
+      const email = getValues("email") || emailInput;
       const res = await verifyEmailCode(email, code);
-      if (res.verified) {
-        setVerificationSuccess(true);
-        // ON VERIFIED: assign product key automatically to this email (backend saves it)
-        if (productKey && productKeyStatus === "valid") {
-          try {
-            await assignProductKeyToEmail({
-              email,
-              productKey: productKey.replace(/-/g, ""),
-            });
-            // product key assigned successfully — advance to next step automatically
-            setStep(3); // security step
-          } catch (err) {
-            alert("Failed to assign product key: " + (err.message || ""));
-          }
-        } else {
-          // if key missing, step to next, backend will assign on final register
-          setStep(3);
-        }
-      } else {
-        alert("Code invalid.");
+      if (!res.verified) {
+        alert("Invalid verification code.");
+        return;
       }
-    } catch (err) {
-      alert(err.message || "Verification failed.");
+
+      setVerificationSuccess(true);
+
+      // Assign product key if present
+      if (productKeyStatus === "valid" && productKey) {
+        try {
+          await assignProductKeyToEmail({
+            email,
+            productKey, // send formatted (backend should normalize)
+          });
+        } catch {
+          // Non-fatal: continue registration flow even if assignment fails
+          console.error("Assign key failed");
+        }
+      }
+
+      setStep(3);
+    } catch {
+      alert("Verification failed.");
     } finally {
       setVerificationLoading(false);
     }
   };
 
-  // FINAL SUBMIT
+  // Final submit
   const onSubmit = async (payload) => {
     setLoading(true);
-
     try {
       // Upload logo if any
       let logoUrl = null;
       if (logoFile) {
-        const upl = await uploadLogo(logoFile);
-        logoUrl = upl.url;
+        const uploaded = await uploadLogo(logoFile);
+        logoUrl = uploaded.url;
       }
 
-      // prepare final payload
       const finalPayload = {
         storeName: payload.storeName,
-        productKey: productKey ? productKey.replace(/-/g, "") : undefined,
-        email: payload.email,
+        email: payload.email || emailInput,
         password: payload.password,
+        productKey: productKey ? productKey.replace(/-/g, "") : undefined, // send cleaned
         phone: payload.phone,
         country: payload.country,
-        logoUrl,
         inviteCode: payload.inviteCode || undefined,
-        captcha: captchaToken || undefined,
+        logoUrl,
       };
 
-      // call register endpoint
       const res = await registerApi(finalPayload);
 
-      // log user in via context
+      // login via context and redirect
       loginUser(res.user);
-
-      // show assigned key (if returned)
-      const assignedKey = res.productKey || productKey.replace(/-/g, "");
-
-      // redirect or show success
       alert("Registration successful!");
       window.location.href = "/dashboard";
     } catch (err) {
-      alert(err.message || "Registration failed");
+      alert(err.message || "Registration failed.");
     } finally {
       setLoading(false);
     }
   };
 
-  // small UI helpers
+  // Password requirements
   const pwRequirements = [
     { label: "8+ characters", ok: (pw) => pw && pw.length >= 8 },
     { label: "Uppercase letter", ok: (pw) => /[A-Z]/.test(pw) },
@@ -239,61 +267,112 @@ export default function Register() {
     { label: "Symbol", ok: (pw) => /[^A-Za-z0-9]/.test(pw) },
   ];
 
-  // Step components
+  // --- Step components ---
   const Step1 = () => (
     <div className="space-y-4">
-      <h3 className="text-xl font-semibold">Store Info</h3>
+      <h3 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
+        Store Info
+      </h3>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Store Name</span>
         <input
           {...register("storeName", { required: true })}
-          className="w-full mt-1 p-3 border rounded-lg"
+          className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
           placeholder="My Supermart Ltd"
         />
       </label>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Upload Store Logo (optional)</span>
-        <input type="file" accept="image/*" onChange={handleLogoChange} className="mt-2" />
+        <input
+          type="file"
+          accept="image/*"
+          onChange={handleLogoChange}
+          className="mt-2 text-gray-700 dark:text-gray-300"
+        />
         {logoPreview && (
-          <img src={logoPreview} alt="logo preview" className="h-24 mt-3 object-contain rounded" />
+          <img
+            src={logoPreview}
+            alt="logo preview"
+            className="h-24 mt-3 object-contain rounded"
+          />
         )}
       </label>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Product Key</span>
         <input
           name="productKey"
+          ref={productKeyRef}
           value={productKey}
           onChange={onProductKeyChange}
-          placeholder="XXXX-XXXX-XXXX-XXXX"
-          maxLength={19}
-          className="w-full mt-1 p-3 border rounded-lg uppercase tracking-widest"
+          placeholder="XXXXXX-XXXXXX-XXXXXX"
+          maxLength={20} // 18 chars + 2 dashes = 20
+          className="w-full mt-1 p-3 border rounded-lg uppercase tracking-widest bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
         />
+
         <div className="mt-2 flex items-center gap-2 text-sm">
-          {productKeyStatus === "checking" && <span>Checking key...</span>}
+          {productKeyStatus === "checking" && (
+            <span className="text-gray-600 dark:text-gray-400">Checking key...</span>
+          )}
+
           {productKeyStatus === "valid" && (
-            <span className="flex items-center text-green-600 gap-1"><Check size={16}/> Valid key</span>
+            <span className="flex items-center text-green-600 gap-1">
+              <Check size={18} /> Valid key
+            </span>
           )}
+
           {productKeyStatus === "invalid" && (
-            <span className="flex items-center text-red-600 gap-1"><X size={16}/> Invalid key</span>
+            <span className="flex items-center text-red-600 gap-1">
+              <X size={18} /> Invalid key
+            </span>
           )}
-          {!productKeyStatus && <span className="text-gray-500">Enter your 16 character product key</span>}
+
+          {!productKeyStatus && (
+            <span className="text-gray-500 dark:text-gray-400">
+              Enter your 18-character product key (6-6-6)
+            </span>
+          )}
         </div>
       </label>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Invite Code (optional)</span>
-        <input onChange={onInviteChange} className="w-full mt-1 p-3 border rounded-lg" placeholder="INVITE123" />
-        {inviteValid === true && <div className="text-green-600 text-sm mt-1">Invite valid</div>}
-        {inviteValid === false && <div className="text-red-600 text-sm mt-1">Invite invalid</div>}
+        <input
+          onChange={onInviteChange}
+          className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
+          placeholder="INVITE123"
+        />
+
+        {inviteValid === true && (
+          <div className="text-green-600 text-sm mt-1">Invite valid</div>
+        )}
+
+        {inviteValid === false && (
+          <div className="text-red-600 text-sm mt-1">Invite invalid</div>
+        )}
       </label>
 
-      <div className="flex justify-end gap-3 mt-2">
+      <div className="flex justify-end mt-4">
         <button
-          onClick={() => setStep(2)}
-          className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+          onClick={() => {
+            const storeName = getValues("storeName") || "";
+            // Enforce strict rules: store name, product key must be present + valid, invite valid if present
+            if (!storeName.trim()) return alert("Store name is required.");
+
+            if (!productKey)
+              return alert("Product key is required.");
+
+            if (productKeyStatus !== "valid")
+              return alert("Product key is invalid. Please check again.");
+
+            // inviteValid can be null (not provided) or true/false; if false -> block
+            if (inviteValid === false) return alert("Invite code is invalid.");
+
+            setStep(2);
+          }}
+          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded"
         >
           Next: Verify Email
         </button>
@@ -303,59 +382,91 @@ export default function Register() {
 
   const Step2 = () => (
     <div className="space-y-4">
-      <h3 className="text-xl font-semibold">Verify Email</h3>
+      <h3 className="text-xl font-semibold text-gray-800 dark:text-gray-100">
+        Verify Email
+      </h3>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Email</span>
         <input
-          {...register("email", { required: true })}
-          className="w-full mt-1 p-3 border rounded-lg"
+          {...register("email")}
+          value={emailInput}
+          onChange={(e) => {
+            setEmailInput(e.target.value);
+            setValue("email", e.target.value);
+          }}
+          className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
           placeholder="owner@store.com"
         />
-        {emailExists === true && <div className="text-yellow-600 text-sm mt-1">Email already registered</div>}
+
+        {emailExists === true && (
+          <div className="text-yellow-600 text-sm mt-1">Email already registered</div>
+        )}
       </label>
 
-      <div className="flex gap-2 items-center">
+      <div className="flex items-center gap-2">
         <button
           onClick={handleSendVerification}
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
           disabled={verificationLoading}
-          className="px-4 py-2 bg-blue-600 text-white rounded"
         >
           {verificationLoading ? "Sending..." : "Send verification code"}
         </button>
 
         {verificationSent && (
-          <div className="text-sm text-gray-700">Code sent — check your inbox (or spam)</div>
+          <div className="text-sm text-gray-600 dark:text-gray-300">
+            Code sent — check your inbox
+          </div>
         )}
       </div>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Enter verification code</span>
-        <input id="code" type="text" className="w-full mt-1 p-3 border rounded-lg" />
-        <div className="flex items-center gap-2 mt-2">
+        <input
+          id="code"
+          type="text"
+          className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
+        />
+
+        <div className="flex gap-2 mt-2">
           <button
             onClick={() => {
               const code = document.getElementById("code").value.trim();
-              if (!code) return alert("Enter code");
+              if (!code) return alert("Enter your code");
               handleVerifyCode(code);
             }}
-            className="px-4 py-2 bg-emerald-600 text-white rounded"
+            className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700"
             disabled={verificationLoading}
           >
             {verificationLoading ? "Verifying..." : "Verify"}
           </button>
+
           {verificationSuccess && <div className="text-green-600">Verified ✓</div>}
         </div>
       </label>
 
-      <div className="flex justify-between mt-3">
-        <button onClick={() => setStep(1)} className="px-4 py-2 border rounded">Back</button>
+      <div className="flex justify-between mt-4">
+        <button
+          onClick={() => setStep(1)}
+          className="px-4 py-2 border rounded dark:border-gray-700 dark:text-gray-200"
+        >
+          Back
+        </button>
+
         <button
           onClick={() => {
-            if (!verificationSuccess) return alert("You must verify email first.");
+            const email = (emailInput || "").trim();
+            // Strict rules: email format, not registered, verification success
+            if (!email || !email.includes("@") || !email.includes("."))
+              return alert("Enter a valid email address.");
+
+            if (emailExists === true) return alert("This email is already registered.");
+
+            if (!verificationSuccess) return alert("You must verify your email before continuing.");
+
             setStep(3);
           }}
-          className="px-4 py-2 bg-emerald-600 text-white rounded"
+          className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700"
         >
           Next: Security
         </button>
@@ -365,149 +476,152 @@ export default function Register() {
 
   const Step3 = () => (
     <div className="space-y-4">
-      <h3 className="text-xl font-semibold">Security & Contact</h3>
+      <h3 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Security & Contact</h3>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Password</span>
         <div className="relative">
           <input
-            {...register("password", { required: true })}
+            {...register("password")}
+            onChange={(e) => {
+              setValue("password", e.target.value);
+              setPasswordStrength(evaluateStrength(e.target.value));
+            }}
             type={passwordVisible ? "text" : "password"}
-            className="w-full mt-1 p-3 border rounded-lg"
+            className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
             placeholder="Choose a strong password"
           />
-          <button
-            type="button"
-            onClick={() => setPasswordVisible((s) => !s)}
-            className="absolute right-3 top-3"
-          >
-            {passwordVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+          <button type="button" onClick={() => setPasswordVisible((s) => !s)} className="absolute right-3 top-3">
+            {passwordVisible ? <EyeOff size={18} className="text-gray-500 dark:text-gray-300" /> : <Eye size={18} className="text-gray-500 dark:text-gray-300" />}
           </button>
         </div>
       </label>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Confirm Password</span>
         <div className="relative">
           <input
-            {...register("confirmPassword", { required: true })}
+            {...register("confirmPassword")}
+            onChange={(e) => setValue("confirmPassword", e.target.value)}
             type={confirmVisible ? "text" : "password"}
-            className="w-full mt-1 p-3 border rounded-lg"
+            className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
             placeholder="Confirm password"
           />
           <button type="button" onClick={() => setConfirmVisible((s) => !s)} className="absolute right-3 top-3">
-            {confirmVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+            {confirmVisible ? <EyeOff size={18} className="text-gray-500 dark:text-gray-300" /> : <Eye size={18} className="text-gray-500 dark:text-gray-300" />}
           </button>
         </div>
       </label>
 
-      {/* Password requirements checklist */}
-      <div className="p-3 border rounded-md bg-gray-50">
-        <div className="text-sm font-medium mb-2">Password Requirements</div>
+      <div className="p-3 border rounded-md bg-gray-50 dark:bg-gray-900 dark:border-gray-700">
+        <div className="text-sm font-medium mb-2 text-gray-700 dark:text-gray-300">Password Requirements</div>
         <ul className="space-y-1">
-          {pwRequirements.map((r) => {
-            const ok = r.ok(password);
+          {pwRequirements.map((req) => {
+            const ok = req.ok(getValues("password") || "");
             return (
-              <li key={r.label} className={`flex items-center gap-2 text-sm ${ok ? "text-green-600" : "text-gray-600"}`}>
-                {ok ? <Check size={14} /> : <span style={{ width: 14 }} />}
-                {r.label}
+              <li key={req.label} className={`flex items-center gap-2 text-sm ${ok ? "text-green-600" : "text-gray-600 dark:text-gray-400"}`}>
+                {ok ? <Check size={14} /> : <span className="w-4" />}
+                {req.label}
               </li>
             );
           })}
         </ul>
 
-        {/* strength bar */}
         <div className="mt-3">
-          <div className="h-2 bg-gray-200 rounded overflow-hidden">
+          <div className="h-2 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
             <motion.div
               initial={{ width: 0 }}
               animate={{
-                width: passwordStrength.label === "empty" ? "0%" : passwordStrength.label === "weak" ? "33%" : passwordStrength.label === "medium" ? "66%" : "100%",
+                width:
+                  passwordStrength.label === "empty"
+                    ? "0%"
+                    : passwordStrength.label === "weak"
+                    ? "33%"
+                    : passwordStrength.label === "medium"
+                    ? "66%"
+                    : "100%",
               }}
               className={`h-full ${passwordStrength.label === "weak" ? "bg-red-500" : passwordStrength.label === "medium" ? "bg-yellow-500" : "bg-green-500"}`}
             />
           </div>
-          <div className="text-xs mt-1">
-            Strength: <strong>{passwordStrength.label}</strong>
-          </div>
+          <div className="text-xs mt-1 text-gray-700 dark:text-gray-300">Strength: <strong>{passwordStrength.label}</strong></div>
         </div>
       </div>
 
-      <label className="block">
+      <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Phone</span>
         <div className="flex gap-2">
-          <select {...register("country")} className="p-3 border rounded-lg w-32">
+          <select {...register("country")} className="p-3 border rounded-lg w-32 bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700">
             <option value="US">US (+1)</option>
             <option value="GB">UK (+44)</option>
-            <option value="KE">KE (+254)</option>
-            {/* extend with country list as needed */}
+            <option value="KE">Kenya (+254)</option>
           </select>
-          <input {...register("phone")} className="flex-1 p-3 border rounded-lg" placeholder="Phone number" />
+          <input {...register("phone")} className="flex-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700" placeholder="Phone number" />
         </div>
       </label>
 
-      {/* Placeholder for reCAPTCHA: implement with your site key */}
-      <div className="mt-2">
-        <div className="text-sm text-gray-600">reCAPTCHA placeholder (implement site key)</div>
-      </div>
-
       <div className="flex justify-between mt-4">
-        <button onClick={() => setStep(2)} className="px-4 py-2 border rounded">Back</button>
-        <button
-          onClick={() => {
+        <button onClick={() => setStep(2)} className="px-4 py-2 border rounded dark:border-gray-700 dark:text-gray-200">Back</button>
+
+        <button onClick={() => {
             const vals = getValues();
-            if (!vals.password || !vals.confirmPassword) return alert("Fill passwords");
-            if (vals.password !== vals.confirmPassword) return alert("Passwords do not match");
+            const password = vals.password;
+            const confirmPassword = vals.confirmPassword;
+            const phone = vals.phone;
+
+            if (!password || !confirmPassword) return alert("Please enter and confirm your password.");
+            if (password !== confirmPassword) return alert("Passwords do not match.");
+
+            // Ensure password meets ALL requirements
+            const failedReq = pwRequirements.find(req => !req.ok(password));
+            if (failedReq) return alert(`Password too weak — missing: ${failedReq.label}`);
+
+            if (!phone || !String(phone).trim()) return alert("Phone number is required.");
+
             setStep(4);
-          }}
-          className="px-4 py-2 bg-emerald-600 text-white rounded"
-        >
+          }} className="px-4 py-2 bg-emerald-600 text-white rounded hover:bg-emerald-700">
           Next: Finish
         </button>
       </div>
     </div>
   );
 
-  const Step4 = () => {
-    const assignedKey = productKey ? productKey : "Will be assigned";
-    return (
-      <div className="space-y-4">
-        <h3 className="text-xl font-semibold">Finish & Create Account</h3>
+  const Step4 = () => (
+    <div className="space-y-4">
+      <h3 className="text-xl font-semibold text-gray-800 dark:text-gray-100">Finish & Create Account</h3>
 
-        <div className="p-4 border rounded space-y-2">
-          <div><strong>Store:</strong> {getValues("storeName")}</div>
-          <div><strong>Email:</strong> {getValues("email")}</div>
-          <div><strong>Assigned Product Key:</strong> <span className="font-mono">{assignedKey}</span></div>
-          <div><strong>Invite code:</strong> {getValues("inviteCode") || "—"}</div>
-        </div>
-
-        <div className="flex justify-between mt-4">
-          <button onClick={() => setStep(3)} className="px-4 py-2 border rounded">Back</button>
-          <button
-            onClick={handleSubmit(onSubmit)}
-            disabled={loading}
-            className="px-4 py-2 bg-blue-600 text-white rounded"
-          >
-            {loading ? "Creating account..." : "Create account"}
-          </button>
-        </div>
+      <div className="p-4 border rounded bg-white dark:bg-gray-900 dark:border-gray-700">
+        <div className="text-gray-800 dark:text-gray-200"><strong>Store:</strong> {getValues("storeName")}</div>
+        <div className="text-gray-800 dark:text-gray-200"><strong>Email:</strong> {getValues("email") || emailInput}</div>
+        <div className="text-gray-800 dark:text-gray-200"><strong>Product Key:</strong> {productKey || "Will be assigned automatically"}</div>
+        <div className="text-gray-800 dark:text-gray-200"><strong>Invite Code:</strong> {getValues("inviteCode") || "—"}</div>
       </div>
-    );
-  };
 
+      <div className="flex justify-between mt-4">
+        <button onClick={() => setStep(3)} className="px-4 py-2 border rounded dark:border-gray-700 dark:text-gray-200">Back</button>
+
+        <button onClick={handleSubmit(onSubmit)} disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+          {loading ? "Creating account..." : "Create account"}
+        </button>
+      </div>
+    </div>
+  );
+
+  // --- Render ---
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 to-emerald-100 p-6">
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-3xl">
-        <div className="bg-white rounded-2xl shadow-lg p-6 grid md:grid-cols-2 gap-6">
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 to-emerald-100 dark:from-gray-900 dark:to-gray-800 p-6">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="w-full max-w-4xl">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-lg p-6 grid md:grid-cols-2 gap-6 border border-gray-200 dark:border-gray-700">
+          
           <div className="hidden md:block p-4">
-            <h2 className="text-3xl font-extrabold text-emerald-700 mb-3">Create your SmartStock account</h2>
-            <p className="text-gray-600">Step {step} of 4 — onboarding made simple. Your product key will be assigned once we verify your email.</p>
+            <h2 className="text-3xl font-extrabold text-emerald-700 dark:text-emerald-400 mb-3">Create your SmartStock account</h2>
+            <p className="text-gray-600 dark:text-gray-300">Step {step} of 4 — onboarding made simple.</p>
 
             <ol className="mt-6 space-y-3 text-sm">
-              <li className={`${step === 1 ? "text-emerald-600 font-semibold" : ""}`}>1. Store Info</li>
-              <li className={`${step === 2 ? "text-emerald-600 font-semibold" : ""}`}>2. Verify Email</li>
-              <li className={`${step === 3 ? "text-emerald-600 font-semibold" : ""}`}>3. Security</li>
-              <li className={`${step === 4 ? "text-emerald-600 font-semibold" : ""}`}>4. Finish</li>
+              <li className={step === 1 ? "text-emerald-500 font-semibold" : "text-gray-600 dark:text-gray-300"}>1. Store Info</li>
+              <li className={step === 2 ? "text-emerald-500 font-semibold" : "text-gray-600 dark:text-gray-300"}>2. Verify Email</li>
+              <li className={step === 3 ? "text-emerald-500 font-semibold" : "text-gray-600 dark:text-gray-300"}>3. Security</li>
+              <li className={step === 4 ? "text-emerald-500 font-semibold" : "text-gray-600 dark:text-gray-300"}>4. Finish</li>
             </ol>
           </div>
 
@@ -519,6 +633,7 @@ export default function Register() {
               {step === 4 && <Step4 />}
             </form>
           </div>
+
         </div>
       </motion.div>
     </div>

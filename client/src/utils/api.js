@@ -1,11 +1,11 @@
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4000";
+const API_BASE = import.meta.env.VITE_API_URL;
 
 export const api = async (endpoint, method = "GET", data = null, auth = false) => {
   const headers = {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
   };
 
-  // Attach JWT on protected endpoints
+  // Attach JWT on protected requests
   if (auth) {
     const token = localStorage.getItem("token");
     if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -18,8 +18,21 @@ export const api = async (endpoint, method = "GET", data = null, auth = false) =
     credentials: "include",
   });
 
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.message || "Request failed");
+  let json = {};
+
+  try {
+    json = await res.json();
+  } catch {
+    // Avoid crashing if body is empty
+    json = {};
+  }
+
+  // ❌ DO NOT throw new Error("…") — it hides backend messages
+  if (!res.ok) {
+    const err = new Error(json.message || "Request failed");
+    err.response = { data: json, status: res.status };
+    throw err;
+  }
 
   return json;
 };
