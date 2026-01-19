@@ -43,7 +43,12 @@ export default function Login() {
         localStorage.removeItem("token");
       }
 
-      window.location.href = "/dashboard";
+      if (res.user.role === "admin") {
+         window.location.href = "/dashboard";
+        } else {
+          window.location.href = "/pos";
+        }
+
 
     } catch (err) {
       console.error("Login error:", err);

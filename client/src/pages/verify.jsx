@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { verifyEmailCode, resendCode } from "../api/auth";
+import { verifyEmailCode, resendCode } from "../services/auth";
 import { useNavigate } from "react-router-dom";
 
 export default function VerifyCodePage() {

@@ -1,8 +1,3 @@
-/**
- * server/models/Item.js
- * Inventory Item schema for SmartStock Manager Pro
- */
-
 const mongoose = require('mongoose');
 
 const itemSchema = new mongoose.Schema(

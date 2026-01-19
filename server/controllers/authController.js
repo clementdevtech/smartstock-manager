@@ -19,6 +19,10 @@ const generateToken = (user) => {
   );
 };
 
+
+const normalizeKey = (key = "") =>
+  key.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+
 // ===============================================================
 // 1️⃣ CHECK IF EMAIL EXISTS (MongoDB + SQLite)
 // ===============================================================
@@ -84,19 +88,33 @@ exports.verifyEmailCode = async (req, res) => {
     const { email, code } = req.body;
 
     const record = await VerificationCode.findOne({ email, code });
-
-    if (!record) return res.status(400).json({ message: "Invalid or expired code" });
-    if (record.expiresAt < Date.now())
+    if (!record || record.expiresAt < Date.now()) {
       return res.status(400).json({ message: "Invalid or expired code" });
+    }
 
-    // Optionally generate temporary token for password reset
-    const resetToken = crypto.randomBytes(20).toString("hex");
-    await User.updateOne({ email }, { resetPasswordToken: resetToken });
+    // 🔐 Generate reset token
+    const resetToken = crypto.randomBytes(32).toString("hex");
 
-    // Delete used verification code
+    // 🔐 Hash it before saving
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
+
+    await User.updateOne(
+      { email },
+      {
+        resetPasswordToken: hashedToken,
+        resetPasswordExpire: Date.now() + 15 * 60 * 1000, // 15 minutes
+      }
+    );
+
     await VerificationCode.deleteMany({ email });
 
-    res.json({ verified: true, token: resetToken });
+    res.json({
+      verified: true,
+      token: resetToken, // ✅ SEND RAW TOKEN TO CLIENT
+    });
   } catch (err) {
     console.error("❌ Verification error:", err);
     res.status(500).json({ message: "Verification failed" });
@@ -104,13 +122,14 @@ exports.verifyEmailCode = async (req, res) => {
 };
 
 
+
 // ===============================================================
 // 4️⃣ VALIDATE PRODUCT KEY
 // ===============================================================
 exports.validateProductKey = async (req, res) => {
-  console.log('validating key');
   try {
-    const { productKey } = req.query;
+    const rawKey = req.query.productKey;
+    const productKey = normalizeKey(rawKey);
 
     const key = await ProductKey.findOne({
       key: productKey,
@@ -123,6 +142,7 @@ exports.validateProductKey = async (req, res) => {
   }
 };
 
+
 // ===============================================================
 // 5️⃣ ASSIGN PRODUCT KEY TO EMAIL (MONGODB)
 // ===============================================================
@@ -130,16 +150,23 @@ exports.assignProductKeyToEmail = async (req, res) => {
   try {
     const { email, productKey } = req.body;
 
-    await ProductKey.updateOne(
-      { key: productKey },
-      { used: true, assigned_email: email }
+    const normalizedKey = normalizeKey(productKey);
+
+    const result = await ProductKey.updateOne(
+      { key: normalizedKey, used: false },
+      { used: true, assignedEmail: email }
     );
+
+    if (result.modifiedCount === 0) {
+      return res.status(400).json({ message: "Key already used or invalid" });
+    }
 
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: "Failed to assign key" });
   }
 };
+
 
 // ===============================================================
 // 6️⃣ VALIDATE INVITE CODE (Admin-created)
@@ -177,27 +204,60 @@ exports.register = async (req, res) => {
       logoUrl,
     } = req.body;
 
-    // ------------------------------
+    // ------------------------------------
+    // NORMALIZE PRODUCT KEY (if provided)
+    // ------------------------------------
+    const normalizeKey = (key = "") =>
+      key.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+
+    const normalizedProductKey = productKey
+      ? normalizeKey(productKey)
+      : null;
+
+    // ------------------------------------
     // CHECK EMAIL EXISTS ANYWHERE
-    // ------------------------------
+    // ------------------------------------
     const mongoExists = await User.findOne({ email });
-    const localExists = await db.get("SELECT * FROM local_users WHERE email = ?", [email]);
+    const localExists = await db.get(
+      "SELECT * FROM local_users WHERE email = ?",
+      [email]
+    );
 
     if (mongoExists || localExists) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
-    // ------------------------------
+    // ------------------------------------
+    // VALIDATE PRODUCT KEY OWNERSHIP
+    // ------------------------------------
+    if (normalizedProductKey) {
+      const keyRecord = await ProductKey.findOne({
+        key: normalizedProductKey,
+        used: true,
+        assignedEmail: email,
+      });
+
+      if (!keyRecord) {
+        return res
+          .status(400)
+          .json({ message: "Invalid or unassigned product key" });
+      }
+    }
+
+    // ------------------------------------
     // HASH PASSWORD
-    // ------------------------------
+    // ------------------------------------
     const salt = await bcrypt.genSalt(12);
     const hashed = await bcrypt.hash(password, salt);
 
-    // -----------------------------------------------------
-    //  CASE A: FIRST USER (ADMIN) → SAVE IN MONGODB
-    // -----------------------------------------------------
+    // ------------------------------------
+    // CHECK IF FIRST USER (ADMIN)
+    // ------------------------------------
     const adminExists = await User.findOne();
 
+    // =====================================================
+    // CASE A: FIRST USER → ADMIN → MONGODB
+    // =====================================================
     if (!adminExists) {
       const adminUser = await User.create({
         name: storeName,
@@ -206,28 +266,36 @@ exports.register = async (req, res) => {
         role: "admin",
       });
 
+      // Mark invite code used (MongoDB)
+      if (inviteCode) {
+        await InviteCode.updateOne(
+          { code: inviteCode, used: false },
+          { used: true }
+        );
+      }
+
       return res.json({
         user: adminUser,
         role: "admin",
         token: generateToken(adminUser),
-        productKey,
+        productKey: normalizedProductKey,
       });
     }
 
-    // -----------------------------------------------------
-    // CASE B: NORMAL USER → SAVE IN SQLITE
-    // -----------------------------------------------------
+    // =====================================================
+    // CASE B: NORMAL USER → SQLITE
+    // =====================================================
     await db.run(
       `INSERT INTO local_users (email, password, storeName, phone, country, logoUrl)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [email, hashed, storeName, phone, country, logoUrl]
     );
 
-    // mark invite code used
+    // Mark invite code used (MongoDB)
     if (inviteCode) {
-      await db.run(
-        "UPDATE invite_codes SET used = 1 WHERE code = ?",
-        [inviteCode]
+      await InviteCode.updateOne(
+        { code: inviteCode, used: false },
+        { used: true }
       );
     }
 
@@ -238,12 +306,14 @@ exports.register = async (req, res) => {
         role: "user",
       },
       role: "user",
-      productKey,
+      productKey: normalizedProductKey,
     });
   } catch (err) {
+    console.error("❌ Registration error:", err);
     res.status(500).json({ message: "Registration failed" });
   }
 };
+
 
 // ===============================================================
 // 8️⃣ LOGIN (Check MongoDB first, then SQLite)
@@ -421,34 +491,33 @@ exports.verifyResetCode = async (req, res) => {
 // ===============================================================
 exports.resetPassword = async (req, res) => {
   try {
-    const { email, newPassword, token } = req.body;
+    const { newPassword, token } = req.body;
 
-    if (!email || !newPassword || !token)
+    if (!newPassword || !token) {
       return res.status(400).json({ message: "Missing required fields" });
+    }
 
-    // Hash the token from request to compare with stored token
-    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
 
-    // Find user with matching token and check expiry
     const user = await User.findOne({
-      email,
       resetPasswordToken: hashedToken,
       resetPasswordExpire: { $gt: Date.now() },
     });
 
     if (!user) {
-      return res.status(400).json({ message: "user not found or invalid token" });
+      return res.status(400).json({ message: "Invalid or expired reset token" });
     }
 
-    // Hash the new password
-    const salt = await bcrypt.genSalt(12);
-    user.password = await bcrypt.hash(newPassword, salt);
+    // ✅ DO NOT HASH HERE
+    user.password = newPassword;
 
-    // Clear reset token fields
     user.resetPasswordToken = undefined;
     user.resetPasswordExpire = undefined;
 
-    await user.save();
+    await user.save(); // pre("save") hashes once
 
     res.json({ message: "Password updated successfully" });
   } catch (err) {
@@ -456,3 +525,4 @@ exports.resetPassword = async (req, res) => {
     res.status(500).json({ message: "Password reset failed" });
   }
 };
+ 
