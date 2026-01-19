@@ -2,6 +2,7 @@ import { useContext, useState } from "react";
 import { useForm } from "react-hook-form";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import { login } from "../services/auth";
 import { useToast } from "../hooks/use-toast";
@@ -18,6 +19,7 @@ import { Button } from "../components/ui/button";
 
 export default function Login() {
   const { loginUser } = useContext(AuthContext);
+  const navigate = useNavigate();
   const { toast } = useToast();
   const { register, handleSubmit } = useForm();
 
@@ -31,7 +33,19 @@ export default function Login() {
     try {
       const res = await login(data.email, data.password);
 
-      // --- LOGIN SUCCESS ---
+      /**
+       * ✅ IMPORTANT
+       * Token MUST be stored BEFORE updating context
+       */
+      if (remember) {
+        localStorage.setItem("token", res.token);
+      } else {
+        sessionStorage.setItem("token", res.token);
+      }
+
+      /**
+       * ✅ Hydrate AuthContext
+       */
       loginUser(res.user);
 
       toast({
@@ -39,38 +53,30 @@ export default function Login() {
         description: `Logged in as ${res.user.email}`,
       });
 
-      if (!remember) {
-        localStorage.removeItem("token");
-      }
-
+      /**
+       * ✅ SPA-safe navigation (NO PAGE RELOAD)
+       */
       if (res.user.role === "admin") {
-         window.location.href = "/dashboard";
-        } else {
-          window.location.href = "/pos";
-        }
-
+        navigate("/dashboard", { replace: true });
+      } else {
+        navigate("/pos", { replace: true });
+      }
 
     } catch (err) {
       console.error("Login error:", err);
 
-      // Extract backend error message
-      const backendMessage =
-        err?.response?.data?.message ||
-        err?.message ||
-        "Login failed";
-
       toast({
         title: "Login failed",
-        description: backendMessage,
+        description: err.message || "Invalid email or password",
         variant: "destructive",
       });
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4 transition-colors duration-300">
+    <div className="min-h-screen flex items-center justify-center bg-background text-foreground p-4">
       <motion.div
         initial={{ opacity: 0, y: 50 }}
         animate={{ opacity: 1, y: 0 }}
@@ -93,7 +99,7 @@ export default function Login() {
                   {...register("email")}
                   type="email"
                   required
-                  className="peer w-full px-3 py-4 bg-input border border-border rounded-xl outline-none text-foreground focus:ring-2 focus:ring-emerald-500"
+                  className="peer w-full px-3 py-4 bg-input border border-border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500"
                 />
                 <label className="absolute left-3 top-3 text-muted-foreground transition-all
                   peer-focus:-top-6 peer-focus:text-sm peer-focus:text-emerald-600
@@ -108,7 +114,7 @@ export default function Login() {
                   {...register("password")}
                   type={showPass ? "text" : "password"}
                   required
-                  className="peer w-full px-3 py-4 bg-input border border-border rounded-xl outline-none text-foreground focus:ring-2 focus:ring-emerald-500"
+                  className="peer w-full px-3 py-4 bg-input border border-border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500"
                 />
                 <label className="absolute left-3 top-3 text-muted-foreground transition-all
                   peer-focus:-top-6 peer-focus:text-sm peer-focus:text-emerald-600
@@ -116,7 +122,6 @@ export default function Login() {
                   Password
                 </label>
 
-                {/* Toggle Password */}
                 <div
                   className="absolute right-3 top-3 text-muted-foreground cursor-pointer"
                   onClick={() => setShowPass(!showPass)}
@@ -126,7 +131,7 @@ export default function Login() {
               </div>
 
               {/* Remember Me */}
-              <div className="flex items-center justify-between mt-2">
+              <div className="flex items-center justify-between">
                 <label className="flex items-center space-x-2">
                   <input
                     type="checkbox"

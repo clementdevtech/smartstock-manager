@@ -5,9 +5,9 @@ const {
   getUsers,
   resetPassword,
 } = require("../controllers/adminController");
-const { protect, adminOnly } = require("../middleware/auth");
+const { protect } = require("../middleware/authMiddleware");
 
-router.use(protect, adminOnly);
+router.use(protect);
 
 router.post("/users", createUser);
 router.get("/users", getUsers);

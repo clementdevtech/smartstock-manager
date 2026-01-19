@@ -1,5 +1,5 @@
 const bcrypt = require("bcryptjs");
-const db = require("../db/sqlite");
+const db = require("../sqlite");
 
 // CREATE USER (SQLITE)
 exports.createUser = async (req, res) => {

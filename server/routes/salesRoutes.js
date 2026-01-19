@@ -1,8 +1,3 @@
-/**
- * server/routes/salesRoutes.js
- * Routes for sales management (POS, history, daily summary)
- */
-
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middleware/authMiddleware');

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const auth = require("../controllers/authController");
+const { protect } = require("../middleware/authMiddleware");
 
 // EMAIL
 router.get("/check-email", auth.checkEmailExists);
@@ -25,5 +26,11 @@ router.post("/register", auth.register);
 
 // LOGIN
 router.post("/login", auth.loginUser);
+
+//me 
+router.get("/me", protect, (req, res) => {
+  res.json(req.user);
+});
+
 
 module.exports = router;

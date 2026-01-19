@@ -1,17 +1,16 @@
 import React, { useEffect, useState, useRef } from "react";
-import axios from "axios";
 import {
   ShoppingCart,
   Plus,
   Minus,
   Trash2,
   DollarSign,
-  CreditCard,
   Printer,
   Search,
 } from "lucide-react";
 import Toast from "../components/Toast";
 import { useReactToPrint } from "react-to-print";
+import { api } from "../utils/api";
 
 const POS = () => {
   const [items, setItems] = useState([]);
@@ -21,16 +20,14 @@ const POS = () => {
   const [paymentType, setPaymentType] = useState("cash");
   const [customerCash, setCustomerCash] = useState("");
   const receiptRef = useRef();
-  const token = localStorage.getItem("token");
-  const headers = token ? { Authorization: `Bearer ${token}` } : {};
 
-  // ✅ Fetch available inventory
+  // ✅ Fetch inventory
   const fetchItems = async () => {
     try {
-      const res = await axios.get("/api/items", { headers });
-      setItems(res.data || []);
-    } catch (error) {
-      console.error(error);
+      const res = await api("/api/items", "GET");
+      setItems(Array.isArray(res) ? res : []);
+    } catch (err) {
+      console.error(err);
       setToast({ message: "Failed to load inventory", type: "error" });
     }
   };
@@ -39,7 +36,7 @@ const POS = () => {
     fetchItems();
   }, []);
 
-  // ✅ Add to cart
+  // ✅ Cart logic
   const addToCart = (item) => {
     const existing = cart.find((c) => c._id === item._id);
     if (existing) {
@@ -53,12 +50,10 @@ const POS = () => {
     }
   };
 
-  // ✅ Remove from cart
   const removeFromCart = (id) => {
     setCart(cart.filter((c) => c._id !== id));
   };
 
-  // ✅ Change qty
   const updateQty = (id, delta) => {
     setCart(
       cart.map((c) =>
@@ -78,14 +73,15 @@ const POS = () => {
   const total = subTotal + tax;
   const change = customerCash ? customerCash - total : 0;
 
-  // ✅ Complete sale
+  // ✅ Checkout
   const handleCheckout = async () => {
-    if (cart.length === 0) {
+    if (!cart.length) {
       setToast({ message: "Cart is empty", type: "error" });
       return;
     }
+
     try {
-      const saleData = {
+      const salePayload = {
         items: cart.map((i) => ({
           id: i._id,
           name: i.name,
@@ -96,54 +92,54 @@ const POS = () => {
         paymentType,
       };
 
-      await axios.post("/api/sales", saleData, { headers });
+      // Save sale
+      await api("/api/sales", "POST", salePayload);
 
-      // ✅ Reduce stock
+      // Reduce stock
       for (const item of cart) {
-        await axios.put(`/api/items/${item._id}`, {
+        await api(`/api/items/${item._id}`, "PUT", {
           ...item,
           quantity: item.quantity - item.qty,
-        }, { headers });
+        });
       }
 
       setToast({ message: "Sale completed successfully!", type: "success" });
       setCart([]);
       setCustomerCash("");
       fetchItems();
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      console.error(err);
       setToast({ message: "Checkout failed", type: "error" });
     }
   };
 
-  // ✅ Print Receipt
+  // ✅ Print receipt
   const handlePrint = useReactToPrint({
     contentRef: receiptRef,
     documentTitle: "Receipt",
   });
 
-  // ✅ Search filter
+  // ✅ Search
   const filteredItems = items.filter((i) =>
     i.name.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <div className="p-4">
-      <h1 className="text-2xl font-bold flex items-center gap-2 mb-6 text-gray-800 dark:text-gray-100">
+      <h1 className="text-2xl font-bold flex items-center gap-2 mb-6">
         <ShoppingCart className="text-blue-600" /> Point of Sale
       </h1>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Product List */}
-        <div className="md:col-span-2 bg-white dark:bg-gray-900 p-4 rounded-xl shadow border border-gray-200 dark:border-gray-700">
+        {/* Products */}
+        <div className="md:col-span-2 bg-white dark:bg-gray-900 p-4 rounded-xl border">
           <div className="flex items-center gap-2 mb-4">
-            <Search size={18} className="text-gray-500" />
+            <Search size={18} />
             <input
-              type="text"
-              placeholder="Search product..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full p-2 border rounded-md dark:bg-gray-800 dark:border-gray-700"
+              placeholder="Search product..."
+              className="w-full p-2 border rounded-md dark:bg-gray-800"
             />
           </div>
 
@@ -152,24 +148,28 @@ const POS = () => {
               <div
                 key={i._id}
                 onClick={() => addToCart(i)}
-                className="cursor-pointer border p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20 transition"
+                className="cursor-pointer border p-3 rounded-lg hover:bg-blue-50 dark:hover:bg-blue-900/20"
               >
-                <h3 className="font-medium text-gray-800 dark:text-gray-100">{i.name}</h3>
-                <p className="text-sm text-gray-500 capitalize">{i.category}</p>
-                <p className="text-blue-600 font-semibold mt-1">${i.retailPrice}</p>
+                <h3 className="font-medium">{i.name}</h3>
+                <p className="text-sm text-gray-500 capitalize">
+                  {i.category}
+                </p>
+                <p className="text-blue-600 font-semibold mt-1">
+                  ${i.retailPrice}
+                </p>
               </div>
             ))}
           </div>
         </div>
 
         {/* Cart */}
-        <div className="bg-white dark:bg-gray-900 p-4 rounded-xl shadow border border-gray-200 dark:border-gray-700">
-          <h2 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2 mb-3">
+        <div className="bg-white dark:bg-gray-900 p-4 rounded-xl border">
+          <h2 className="font-semibold flex items-center gap-2 mb-3">
             <ShoppingCart size={18} /> Cart ({cart.length})
           </h2>
 
           <div className="max-h-64 overflow-y-auto">
-            {cart.length > 0 ? (
+            {cart.length ? (
               cart.map((i) => (
                 <div
                   key={i._id}
@@ -199,35 +199,34 @@ const POS = () => {
                 </div>
               ))
             ) : (
-              <p className="text-gray-500 text-center mt-4">No items added.</p>
+              <p className="text-center text-gray-500 mt-4">
+                No items added.
+              </p>
             )}
           </div>
 
           {/* Totals */}
-          <div className="border-t pt-3 mt-3 text-sm text-gray-700 dark:text-gray-300">
+          <div className="border-t pt-3 mt-3 text-sm">
             <div className="flex justify-between">
-              <span>Subtotal:</span>
+              <span>Subtotal</span>
               <span>${subTotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between">
-              <span>Tax (16%):</span>
+              <span>Tax (16%)</span>
               <span>${tax.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between font-semibold text-lg mt-1">
-              <span>Total:</span>
+            <div className="flex justify-between font-bold text-lg">
+              <span>Total</span>
               <span>${total.toFixed(2)}</span>
             </div>
           </div>
 
           {/* Payment */}
           <div className="mt-4">
-            <label className="block mb-2 text-gray-600 dark:text-gray-300">
-              Payment Method:
-            </label>
             <select
               value={paymentType}
               onChange={(e) => setPaymentType(e.target.value)}
-              className="w-full p-2 border rounded-md dark:bg-gray-800 dark:border-gray-700"
+              className="w-full p-2 border rounded-md dark:bg-gray-800"
             >
               <option value="cash">Cash</option>
               <option value="card">Card</option>
@@ -241,7 +240,7 @@ const POS = () => {
                   placeholder="Customer cash"
                   value={customerCash}
                   onChange={(e) => setCustomerCash(e.target.value)}
-                  className="w-full mt-2 p-2 border rounded-md dark:bg-gray-800 dark:border-gray-700"
+                  className="w-full mt-2 p-2 border rounded-md dark:bg-gray-800"
                 />
                 {customerCash && (
                   <p
@@ -258,25 +257,25 @@ const POS = () => {
 
           <button
             onClick={handleCheckout}
-            className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg flex items-center justify-center gap-2"
+            className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg flex justify-center gap-2"
           >
             <DollarSign size={18} /> Complete Sale
           </button>
 
           <button
             onClick={handlePrint}
-            className="w-full mt-2 bg-gray-700 hover:bg-gray-800 text-white py-2 rounded-lg flex items-center justify-center gap-2"
+            className="w-full mt-2 bg-gray-700 hover:bg-gray-800 text-white py-2 rounded-lg flex justify-center gap-2"
           >
             <Printer size={18} /> Print Receipt
           </button>
         </div>
       </div>
 
-      {/* Receipt (Hidden for print) */}
+      {/* Receipt */}
       <div className="hidden">
         <div ref={receiptRef} className="p-6 text-sm">
-          <h2 className="font-bold text-lg mb-2">🏀CocoPOS Receipt</h2>
-          <hr className="my-2" />
+          <h2 className="font-bold text-lg mb-2">🧾 SmartStock Receipt</h2>
+          <hr />
           {cart.map((i) => (
             <div key={i._id} className="flex justify-between">
               <span>
@@ -285,18 +284,14 @@ const POS = () => {
               <span>${(i.qty * i.retailPrice).toFixed(2)}</span>
             </div>
           ))}
-          <hr className="my-2" />
+          <hr />
           <p>Subtotal: ${subTotal.toFixed(2)}</p>
           <p>Tax: ${tax.toFixed(2)}</p>
           <p className="font-bold">Total: ${total.toFixed(2)}</p>
           <p className="mt-2">Payment: {paymentType}</p>
-          <p className="mt-1 text-xs text-gray-500">
-            Thank you for your purchase!
-          </p>
         </div>
       </div>
 
-      {/* Toast */}
       {toast && (
         <div className="fixed bottom-4 right-4 z-50">
           <Toast {...toast} onClose={() => setToast(null)} />

@@ -1,8 +1,3 @@
-/**
- * server/routes/backupRoutes.js
- * Routes for exporting and importing data backups in SmartStock Manager Pro
- */
-
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -10,8 +5,12 @@ const { protect } = require('../middleware/authMiddleware');
 const {
   exportBackup,
   importBackup,
-} = require('../controllers/backupController');
+  backupDatabase,
+  restoreDatabase,
+} = require("../controllers/backupController");
 
+router.post("/backup", protect, backupDatabase);
+router.post("/restore", protect, restoreDatabase);
 // Multer setup for uploading backup files
 const upload = multer({ dest: 'uploads/' });
 

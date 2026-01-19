@@ -1,38 +1,24 @@
-const API_BASE = import.meta.env.VITE_API_URL;
+export const api = async (url, method = "GET", body) => {
+  const token =
+    localStorage.getItem("token") || sessionStorage.getItem("token");
 
-export const api = async (endpoint, method = "GET", data = null, auth = false) => {
-  const headers = {
-    "Content-Type": "application/json",
-  };
+  const res = await fetch(
+    `${import.meta.env.VITE_API_URL}${url}`,
+    {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    }
+  );
 
-  // Attach JWT on protected requests
-  if (auth) {
-    const token = localStorage.getItem("token");
-    if (token) headers["Authorization"] = `Bearer ${token}`;
-  }
+  const data = await res.json();
 
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    method,
-    headers,
-    body: data ? JSON.stringify(data) : null,
-    credentials: "include",
-  });
-
-  let json = {};
-
-  try {
-    json = await res.json();
-  } catch {
-    // Avoid crashing if body is empty
-    json = {};
-  }
-
-  // ❌ DO NOT throw new Error("…") — it hides backend messages
   if (!res.ok) {
-    const err = new Error(json.message || "Request failed");
-    err.response = { data: json, status: res.status };
-    throw err;
+    throw new Error(data.message || "API error");
   }
 
-  return json;
+  return data;
 };

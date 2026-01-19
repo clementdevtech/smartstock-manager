@@ -1,17 +1,10 @@
-/**
- * server/controllers/backupController.js
- * Logic for exporting and importing data in SmartStock Manager Pro
- */
-
 const asyncHandler = require('express-async-handler');
 const fs = require('fs-extra');
 const path = require('path');
 const Item = require('../models/Item');
 const Sale = require('../models/Sale');
 
-// @desc    Export user's inventory and sales data as JSON
-// @route   GET /api/backup/export
-// @access  Private
+
 const exportBackup = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
@@ -89,7 +82,26 @@ const importBackup = asyncHandler(async (req, res) => {
   }
 });
 
+
+const backupDatabase = async (req, res) => {
+  const dbPath = path.join(__dirname, "../data.db");
+  const backupPath = path.join(__dirname, "../backup.db");
+
+  fs.copyFileSync(dbPath, backupPath);
+  res.json({ message: "Backup completed successfully" });
+};
+
+const restoreDatabase = async (req, res) => {
+  const dbPath = path.join(__dirname, "../data.db");
+  const backupPath = path.join(__dirname, "../backup.db");
+
+  fs.copyFileSync(backupPath, dbPath);
+  res.json({ message: "Restore completed successfully" });
+};
+
 module.exports = {
   exportBackup,
   importBackup,
+  backupDatabase,
+  restoreDatabase,
 };
