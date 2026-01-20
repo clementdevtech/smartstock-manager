@@ -16,6 +16,7 @@ const backupRoutes = require('./routes/backupRoutes');
 const authRoutes = require('./routes/authRoutes');
 const userController = require('./routes/userRoutes');
 const adminRoutes = require("./routes/adminRoutes");
+const settingsRoutes = require("./routes/settingsRoutes");
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api/backup', backupRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userController);
 app.use("/api/admin", adminRoutes);
+app.use("/api/settings", settingsRoutes);
 
 
 // Health check

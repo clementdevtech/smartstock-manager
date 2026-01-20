@@ -1,8 +1,3 @@
-/**
- * server/routes/inventoryRoutes.js
- * CRUD routes for inventory items in SmartStock Manager Pro
- */
-
 const express = require('express');
 const router = express.Router();
 

@@ -17,8 +17,7 @@ import ToggleSwitch from "../components/ToggleSwitch";
 import Toast from "../components/Toast";
 
 import { api } from "../utils/api";
-import { changePassword } from "../services/user";
-import {
+import { changePassword,
   getBusinessInfo,
   updateBusinessInfo,
 } from "../services/settings";
