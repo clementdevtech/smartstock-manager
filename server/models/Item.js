@@ -1,69 +1,151 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
+
+/**
+ * Item Schema
+ * - Admin owns Stores
+ * - Store owns Items
+ * - User operates within a Store
+ */
 
 const itemSchema = new mongoose.Schema(
   {
+    /* ---------------- BASIC INFO ---------------- */
     name: {
       type: String,
-      required: [true, 'Item name is required'],
+      required: [true, "Item name is required"],
       trim: true,
     },
+
+    sku: {
+      type: String,
+      trim: true,
+      index: true, // barcode / SKU for supermarkets
+    },
+
     category: {
       type: String,
-      required: [true, 'Category is required'],
-      enum: ['electronics', 'groceries', 'clothing', 'home', 'other'],
-      default: 'other',
+      enum: [
+        "electronics",
+        "groceries",
+        "clothing",
+        "pharmacy",
+        "restaurant",
+        "hardware",
+        "home",
+        "other",
+      ],
+      default: "other",
     },
+
+    unit: {
+      type: String,
+      enum: ["pcs", "kg", "liters", "cartons"],
+      default: "pcs",
+    },
+
+    /* ---------------- PRICING ---------------- */
     wholesalePrice: {
       type: Number,
-      required: [true, 'Wholesale price is required'],
-      min: [0, 'Price cannot be negative'],
+      required: true,
+      min: 0,
     },
+
     retailPrice: {
       type: Number,
-      required: [true, 'Retail price is required'],
-      min: [0, 'Price cannot be negative'],
+      required: true,
+      min: 0,
     },
-    quantity: {
-      type: Number,
-      required: [true, 'Quantity is required'],
-      min: [0, 'Quantity cannot be negative'],
-    },
+
     profitMargin: {
       type: Number,
       default: 0,
     },
-    entryDate: {
-      type: Date,
-      required: [true, 'Entry date is required'],
+
+    /* ---------------- STOCK ---------------- */
+    quantity: {
+      type: Number,
+      required: true,
+      min: 0,
     },
-    expiryDate: {
-      type: Date,
-      default: null,
-    },
-    imageUrl: {
-      type: String,
-      default: '', // optional uploaded image or base64 URL
-    },
+
     lowStockThreshold: {
       type: Number,
       default: 5,
     },
+
+    /* ---------------- PHARMACY / FOOD ---------------- */
+    batchNumber: {
+      type: String,
+      trim: true,
+    },
+
+    expiryDate: {
+      type: Date,
+      default: null,
+    },
+
+    entryDate: {
+      type: Date,
+      required: true,
+    },
+
+    /* ---------------- SUPPLIER ---------------- */
+    supplier: {
+      name: String,
+      phone: String,
+    },
+
+    imageUrl: {
+      type: String,
+      default: "",
+    },
+
+    /* ---------------- OWNERSHIP & ACCESS ---------------- */
+
+    /**
+     * Admin (system owner)
+     * Used for licensing, online activation, analytics
+     */
+    admin: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    /**
+     * Store / Branch
+     * Allows multi-branch businesses
+     */
+    store: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Store",
+      required: true,
+      index: true,
+    },
+
+    /**
+     * User who created / last modified item
+     */
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
+      required: true,
     },
   },
   { timestamps: true }
 );
 
-// Automatically calculate profit margin before save
-itemSchema.pre('save', function (next) {
-  if (this.retailPrice && this.wholesalePrice) {
+/* ---------------- AUTOMATIONS ---------------- */
+
+// Auto-calculate profit
+itemSchema.pre("save", function (next) {
+  if (this.retailPrice != null && this.wholesalePrice != null) {
     this.profitMargin = this.retailPrice - this.wholesalePrice;
   }
   next();
 });
 
-const Item = mongoose.model('Item', itemSchema);
+const Item = mongoose.model("Item", itemSchema);
 
 module.exports = Item;
