@@ -1,10 +1,8 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
-
-require("dotenv").config({
-  path: path.join(__dirname, "..", "server", ".env"),
-});
+const net = require("net");
+const { autoUpdater } = require("electron-updater");
 
 const isDev = !app.isPackaged;
 
@@ -12,31 +10,96 @@ let mainWindow;
 let splashWindow;
 let serverProcess;
 
-/**
- * 🔁 Start backend ONLY in production
- */
-function startBackend() {
-  if (isDev) return;
+/* ============================
+   🔒 Auto Update (Silent)
+============================ */
+if (!isDev) {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
 
-  const serverPath = path.join(__dirname, "..", "server", "server.js");
-
-  serverProcess = spawn(process.execPath, [serverPath], {
-    cwd: path.join(__dirname, "..", "server"),
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-    },
-    stdio: "inherit",
+  autoUpdater.on("error", (err) => {
+    console.error("Updater error:", err);
   });
 
-  serverProcess.on("exit", (code) => {
-    console.log("Backend exited with code:", code);
+  autoUpdater.on("update-downloaded", () => {
+    console.log("Update downloaded, will install on quit");
   });
 }
 
-/**
- * 🪟 Splash Screen
- */
+/* ============================
+   📍 Backend Path (asar-safe)
+============================ */
+function getServerPath() {
+  if (isDev) {
+    return path.join(__dirname, "..", "server", "server.js");
+  }
+
+  return path.join(
+    process.resourcesPath,
+    "app.asar.unpacked",
+    "server",
+    "server.js"
+  );
+}
+
+/* ============================
+   🔁 Start Backend (Prod)
+============================ */
+function startBackend() {
+  if (isDev) return;
+
+  const serverPath = getServerPath();
+
+  serverProcess = spawn(process.execPath, [serverPath], {
+    cwd: path.dirname(serverPath),
+    env: {
+      NODE_ENV: "production",
+      PORT: "3333"
+    },
+    stdio: "ignore",
+    windowsHide: true
+  });
+
+  serverProcess.on("exit", (code) => {
+    console.log("Backend exited:", code);
+  });
+}
+
+/* ============================
+   🔍 Wait for Backend
+============================ */
+function waitForBackend(port, timeout = 10000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+
+    const check = () => {
+      const socket = new net.Socket();
+      socket.setTimeout(1000);
+
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve();
+      });
+
+      socket.once("error", () => {
+        socket.destroy();
+        if (Date.now() - start > timeout) {
+          reject(new Error("Backend timeout"));
+        } else {
+          setTimeout(check, 300);
+        }
+      });
+
+      socket.connect(port, "127.0.0.1");
+    };
+
+    check();
+  });
+}
+
+/* ============================
+   🪟 Splash Window
+============================ */
 function createSplash() {
   splashWindow = new BrowserWindow({
     width: 420,
@@ -45,15 +108,15 @@ function createSplash() {
     transparent: true,
     resizable: false,
     alwaysOnTop: true,
-    icon: path.join(__dirname, "icon.ico"),
+    icon: path.join(__dirname, "icon.ico")
   });
 
   splashWindow.loadFile(path.join(__dirname, "splash.html"));
 }
 
-/**
- * 🪟 Main Window
- */
+/* ============================
+   🪟 Main Window
+============================ */
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -64,15 +127,15 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       sandbox: true,
-      nodeIntegration: false,
-    },
+      nodeIntegration: false
+    }
   });
 
   const startURL = isDev
     ? "http://localhost:5173"
     : `file://${path.join(
-        __dirname,
-        "..",
+        process.resourcesPath,
+        "app.asar",
         "client",
         "dist",
         "index.html"
@@ -80,35 +143,34 @@ function createMainWindow() {
 
   mainWindow.loadURL(startURL);
 
-  /**
-   * ✅ PRIMARY HANDOFF (reliable)
-   */
-  mainWindow.webContents.once("did-finish-load", () => {
-    if (splashWindow && !splashWindow.isDestroyed()) {
-      splashWindow.destroy();
-    }
+  mainWindow.once("ready-to-show", () => {
+    splashWindow?.destroy();
     mainWindow.show();
   });
-
-  /**
-   * ⏱️ FAILSAFE: never stay on splash > 10s
-   */
-  setTimeout(() => {
-    if (splashWindow && !splashWindow.isDestroyed()) {
-      splashWindow.destroy();
-      mainWindow.show();
-    }
-  }, 10000);
 
   if (isDev) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
 }
 
-app.whenReady().then(() => {
-  startBackend();
+/* ============================
+   🚀 App Boot
+============================ */
+app.whenReady().then(async () => {
   createSplash();
+  startBackend();
+
+  try {
+    await waitForBackend(3333);
+  } catch {
+    console.warn("Backend not ready, continuing UI load");
+  }
+
   createMainWindow();
+
+  if (!isDev) {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
 });
 
 app.on("window-all-closed", () => {

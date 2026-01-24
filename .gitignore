@@ -1,1 +1,14 @@
 node_modules
+# Build output
+dist/
+win-unpacked/
+
+# Electron cache
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Electron Builder cache
+AppData/
+.cache/
+release/

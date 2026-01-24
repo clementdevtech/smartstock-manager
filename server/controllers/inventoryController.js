@@ -1,18 +1,46 @@
 const asyncHandler = require("express-async-handler");
 const Item = require("../models/Item");
+const Sale = require("../models/Sale");
+const sendEmail = require("../utils/email");
 
 /**
- * ASSUMPTIONS (important):
+ * ASSUMPTIONS:
  * req.user contains:
- *  - req.user.id        → logged-in user
- *  - req.user.storeId   → active store
- *  - req.user.adminId   → system owner (admin)
+ *  - req.user.id
+ *  - req.user.storeId
+ *  - req.user.adminId
+ *  - req.user.email   (store owner / admin email)
  */
 
 /* =====================================================
-   @desc    Get all items for current store
-   @route   GET /api/items
-   @access  Private
+   INTERNAL: LOW STOCK EMAIL
+===================================================== */
+const sendLowStockEmail = async (item, userEmail) => {
+  if (!userEmail) return;
+
+  const html = `
+    <h2>⚠️ Low Stock Alert</h2>
+    <p>The following item is running low:</p>
+    <ul>
+      <li><strong>Name:</strong> ${item.name}</li>
+      <li><strong>SKU:</strong> ${item.sku}</li>
+      <li><strong>Quantity Left:</strong> ${item.quantity}</li>
+      <li><strong>Low Stock Threshold:</strong> ${item.lowStockThreshold}</li>
+    </ul>
+    <p>Please restock soon to avoid lost sales.</p>
+    <hr />
+    <small>SmartStock Manager</small>
+  `;
+
+  await sendEmail(
+    userEmail,
+    `⚠️ Low Stock Alert: ${item.name}`,
+    html
+  );
+};
+
+/* =====================================================
+   @desc    Get all items
 ===================================================== */
 const getItems = asyncHandler(async (req, res) => {
   const items = await Item.find({
@@ -24,9 +52,7 @@ const getItems = asyncHandler(async (req, res) => {
 });
 
 /* =====================================================
-   @desc    Get single item by ID (store-scoped)
-   @route   GET /api/items/:id
-   @access  Private
+   @desc    Get single item
 ===================================================== */
 const getItemById = asyncHandler(async (req, res) => {
   const item = await Item.findById(req.params.id);
@@ -36,22 +62,37 @@ const getItemById = asyncHandler(async (req, res) => {
     throw new Error("Item not found");
   }
 
-  // 🔒 Prevent cross-store access
   if (
     item.store.toString() !== req.user.storeId ||
     item.admin.toString() !== (req.user.adminId || req.user.id)
   ) {
     res.status(403);
-    throw new Error("Not authorized to view this item");
+    throw new Error("Not authorized");
   }
 
   res.json(item);
 });
 
 /* =====================================================
-   @desc    Create new item
-   @route   POST /api/items
-   @access  Private
+   @desc    Get item by barcode (POS)
+===================================================== */
+const getItemByBarcode = asyncHandler(async (req, res) => {
+  const item = await Item.findOne({
+    sku: req.params.sku,
+    store: req.user.storeId,
+    admin: req.user.adminId || req.user.id,
+  });
+
+  if (!item) {
+    res.status(404);
+    throw new Error("Item not found for this barcode");
+  }
+
+  res.json(item);
+});
+
+/* =====================================================
+   @desc    Create item
 ===================================================== */
 const createItem = asyncHandler(async (req, res) => {
   const {
@@ -70,12 +111,23 @@ const createItem = asyncHandler(async (req, res) => {
     lowStockThreshold,
   } = req.body;
 
-  if (!name || !wholesalePrice || !retailPrice || !quantity || !entryDate) {
+  if (!name || !sku || !retailPrice || !quantity || !entryDate) {
     res.status(400);
-    throw new Error("Please fill all required fields");
+    throw new Error("Missing required fields");
   }
 
-  const item = new Item({
+  const exists = await Item.findOne({
+    sku,
+    store: req.user.storeId,
+    admin: req.user.adminId || req.user.id,
+  });
+
+  if (exists) {
+    res.status(400);
+    throw new Error("This barcode already exists in this store");
+  }
+
+  const item = await Item.create({
     name,
     sku,
     category,
@@ -89,21 +141,21 @@ const createItem = asyncHandler(async (req, res) => {
     supplier,
     imageUrl,
     lowStockThreshold,
-
-    // 🔐 Ownership mapping
     admin: req.user.adminId || req.user.id,
     store: req.user.storeId,
     createdBy: req.user.id,
   });
 
-  const savedItem = await item.save();
-  res.status(201).json(savedItem);
+  // 🔔 Low stock check on creation
+  if (item.quantity <= item.lowStockThreshold) {
+    await sendLowStockEmail(item, req.user.email);
+  }
+
+  res.status(201).json(item);
 });
 
 /* =====================================================
-   @desc    Update existing item
-   @route   PUT /api/items/:id
-   @access  Private
+   @desc    Update item (POS stock deduction hits here)
 ===================================================== */
 const updateItem = asyncHandler(async (req, res) => {
   const item = await Item.findById(req.params.id);
@@ -113,31 +165,32 @@ const updateItem = asyncHandler(async (req, res) => {
     throw new Error("Item not found");
   }
 
-  // 🔒 Store & admin protection
   if (
     item.store.toString() !== req.user.storeId ||
     item.admin.toString() !== (req.user.adminId || req.user.id)
   ) {
     res.status(403);
-    throw new Error("Not authorized to update this item");
+    throw new Error("Not authorized");
   }
 
   const updatedItem = await Item.findByIdAndUpdate(
     req.params.id,
-    {
-      ...req.body,
-      createdBy: req.user.id, // track last editor
-    },
+    { ...req.body, createdBy: req.user.id },
     { new: true, runValidators: true }
   );
+
+  // 🔔 Low stock alert AFTER update
+  if (
+    updatedItem.quantity <= updatedItem.lowStockThreshold
+  ) {
+    await sendLowStockEmail(updatedItem, req.user.email);
+  }
 
   res.json(updatedItem);
 });
 
 /* =====================================================
    @desc    Delete item
-   @route   DELETE /api/items/:id
-   @access  Private
 ===================================================== */
 const deleteItem = asyncHandler(async (req, res) => {
   const item = await Item.findById(req.params.id);
@@ -152,17 +205,43 @@ const deleteItem = asyncHandler(async (req, res) => {
     item.admin.toString() !== (req.user.adminId || req.user.id)
   ) {
     res.status(403);
-    throw new Error("Not authorized to delete this item");
+    throw new Error("Not authorized");
   }
 
   await item.deleteOne();
   res.json({ message: "Item removed successfully" });
 });
 
+/* =====================================================
+   @desc    WEEKLY BEST ITEMS REPORT (CRON READY)
+===================================================== */
+const getWeeklyBestItems = asyncHandler(async (req, res) => {
+  const start = new Date();
+  start.setDate(start.getDate() - 7);
+
+  const report = await Sale.aggregate([
+    { $unwind: "$items" },
+    { $match: { createdAt: { $gte: start } } },
+    {
+      $group: {
+        _id: "$items.item",
+        totalSold: { $sum: "$items.quantity" },
+        revenue: { $sum: "$items.total" },
+      },
+    },
+    { $sort: { totalSold: -1 } },
+    { $limit: 10 },
+  ]);
+
+  res.json(report);
+});
+
 module.exports = {
   getItems,
   getItemById,
+  getItemByBarcode,
   createItem,
   updateItem,
   deleteItem,
+  getWeeklyBestItems,
 };

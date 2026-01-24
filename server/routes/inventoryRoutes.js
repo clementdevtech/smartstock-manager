@@ -1,24 +1,36 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
 
 const {
   getItems,
   getItemById,
+  getItemByBarcode,
   createItem,
   updateItem,
   deleteItem,
-} = require('../controllers/inventoryController');
+} = require("../controllers/inventoryController");
 
-const { protect } = require('../middleware/authMiddleware');
+const { protect } = require("../middleware/authMiddleware");
 
-// Protected routes (user must be logged in)
-router.route('/')
-  .get(protect, getItems)       // GET all items
-  .post(protect, createItem);   // POST new item
+/* =====================================================
+   INVENTORY ROUTES (PROTECTED)
+===================================================== */
 
-router.route('/:id')
-  .get(protect, getItemById)    // GET single item by ID
-  .put(protect, updateItem)     // UPDATE item
-  .delete(protect, deleteItem); // DELETE item
+// Get all items for current store
+router
+  .route("/")
+  .get(protect, getItems)
+  .post(protect, createItem);
+
+// Barcode / SKU scan (POS & inventory lookup)
+router.get("/scan/:sku", protect, getItemByBarcode);
+
+// Single item by ID
+router
+  .route("/:id")
+  .get(protect, getItemById)
+  .put(protect, updateItem)
+  .delete(protect, deleteItem);
 
 module.exports = router;
+

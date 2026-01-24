@@ -4,22 +4,24 @@ const mongoose = require("mongoose");
  * Item Schema
  * - Admin owns Stores
  * - Store owns Items
- * - User operates within a Store
+ * - SKU / Barcode is store-specific
  */
 
 const itemSchema = new mongoose.Schema(
   {
-    /* ---------------- BASIC INFO ---------------- */
+    /* ================= BASIC INFO ================= */
     name: {
       type: String,
       required: [true, "Item name is required"],
       trim: true,
     },
 
+    // Barcode / SKU (POS CORE)
     sku: {
       type: String,
+      required: [true, "SKU / Barcode is required"],
       trim: true,
-      index: true, // barcode / SKU for supermarkets
+      index: true,
     },
 
     category: {
@@ -43,7 +45,7 @@ const itemSchema = new mongoose.Schema(
       default: "pcs",
     },
 
-    /* ---------------- PRICING ---------------- */
+    /* ================= PRICING ================= */
     wholesalePrice: {
       type: Number,
       required: true,
@@ -61,7 +63,7 @@ const itemSchema = new mongoose.Schema(
       default: 0,
     },
 
-    /* ---------------- STOCK ---------------- */
+    /* ================= STOCK ================= */
     quantity: {
       type: Number,
       required: true,
@@ -73,7 +75,7 @@ const itemSchema = new mongoose.Schema(
       default: 5,
     },
 
-    /* ---------------- PHARMACY / FOOD ---------------- */
+    /* ================= FOOD / PHARMACY ================= */
     batchNumber: {
       type: String,
       trim: true,
@@ -89,10 +91,11 @@ const itemSchema = new mongoose.Schema(
       required: true,
     },
 
-    /* ---------------- SUPPLIER ---------------- */
+    /* ================= SUPPLIER ================= */
     supplier: {
-      name: String,
-      phone: String,
+      name: { type: String },
+      phone: { type: String },
+      email: { type: String },
     },
 
     imageUrl: {
@@ -100,12 +103,9 @@ const itemSchema = new mongoose.Schema(
       default: "",
     },
 
-    /* ---------------- OWNERSHIP & ACCESS ---------------- */
+    /* ================= OWNERSHIP ================= */
 
-    /**
-     * Admin (system owner)
-     * Used for licensing, online activation, analytics
-     */
+    // System owner (license, analytics)
     admin: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -113,10 +113,7 @@ const itemSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * Store / Branch
-     * Allows multi-branch businesses
-     */
+    // Store / branch
     store: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Store",
@@ -124,19 +121,31 @@ const itemSchema = new mongoose.Schema(
       index: true,
     },
 
-    /**
-     * User who created / last modified item
-     */
+    // User who last modified
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
     },
+
+    /* ================= SYNC ================= */
+    lastSyncedAt: {
+      type: Date,
+    },
   },
   { timestamps: true }
 );
 
-/* ---------------- AUTOMATIONS ---------------- */
+/* =====================================================
+   INDEXES (CRITICAL FOR BARCODE SCANNING)
+===================================================== */
+
+// SKU must be unique per store per admin
+itemSchema.index({ sku: 1, store: 1, admin: 1 }, { unique: true });
+
+/* =====================================================
+   AUTOMATIONS
+===================================================== */
 
 // Auto-calculate profit
 itemSchema.pre("save", function (next) {

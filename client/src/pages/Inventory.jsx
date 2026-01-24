@@ -7,23 +7,27 @@ import {
   Search,
   AlertTriangle,
   Loader2,
+  Barcode,
 } from "lucide-react";
 import Modal from "../components/Modal";
 import Toast from "../components/Toast";
 import { api } from "../utils/api";
 
+/* =====================================================
+   Defaults
+===================================================== */
 const DEFAULT_FORM = {
   name: "",
   sku: "",
   category: "other",
   unit: "pcs",
+  supplier: "",
   wholesalePrice: "",
   retailPrice: "",
   quantity: "",
   lowStockThreshold: 5,
   entryDate: "",
   expiryDate: "",
-  supplier: "",
 };
 
 const Inventory = () => {
@@ -38,7 +42,7 @@ const Inventory = () => {
   const [search, setSearch] = useState("");
 
   /* =====================================================
-     Fetch inventory (store-scoped by backend)
+     Fetch inventory (branch-scoped by backend)
   ===================================================== */
   const fetchItems = async () => {
     try {
@@ -58,7 +62,7 @@ const Inventory = () => {
   }, []);
 
   /* =====================================================
-     Derived data
+     Derived Data
   ===================================================== */
   const filteredItems = useMemo(() => {
     if (!search) return items;
@@ -82,8 +86,11 @@ const Inventory = () => {
     );
   }, [items]);
 
+  const isLowStock = (item) =>
+    Number(item.quantity) <= Number(item.lowStockThreshold || 5);
+
   /* =====================================================
-     Create / Update
+     Create / Update Item
   ===================================================== */
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -91,10 +98,10 @@ const Inventory = () => {
     try {
       if (editingItem) {
         await api(`/api/items/${editingItem._id}`, "PUT", formData);
-        setToast({ message: "Item updated", type: "success" });
+        setToast({ message: "Item updated successfully", type: "success" });
       } else {
         await api("/api/items", "POST", formData);
-        setToast({ message: "Item added", type: "success" });
+        setToast({ message: "Item added successfully", type: "success" });
       }
 
       setShowModal(false);
@@ -103,12 +110,15 @@ const Inventory = () => {
       fetchItems();
     } catch (err) {
       console.error(err);
-      setToast({ message: err.message || "Action failed", type: "error" });
+      setToast({
+        message: err.message || "Failed to save item",
+        type: "error",
+      });
     }
   };
 
   /* =====================================================
-     Delete
+     Delete Item
   ===================================================== */
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this item permanently?")) return;
@@ -122,9 +132,6 @@ const Inventory = () => {
     }
   };
 
-  const isLowStock = (i) =>
-    Number(i.quantity) <= Number(i.lowStockThreshold || 5);
-
   /* =====================================================
      UI
   ===================================================== */
@@ -133,7 +140,8 @@ const Inventory = () => {
       {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Package className="text-blue-600" /> Inventory
+          <Package className="text-blue-600" />
+          Inventory
         </h1>
 
         <button
@@ -150,16 +158,14 @@ const Inventory = () => {
 
       {/* Stats */}
       <div className="grid sm:grid-cols-3 gap-4">
-        <Stat label="Total Stock" value={stats.totalStock} color="blue" />
+        <Stat label="Total Stock" value={stats.totalStock} />
         <Stat
           label="Stock Value"
           value={`$${stats.totalValue.toFixed(2)}`}
-          color="green"
         />
         <Stat
           label="Estimated Profit"
           value={`$${stats.totalProfit.toFixed(2)}`}
-          color="yellow"
         />
       </div>
 
@@ -169,12 +175,12 @@ const Inventory = () => {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or SKU..."
+          placeholder="Search by name or SKU / barcode..."
           className="w-full p-2 border rounded-md dark:bg-gray-800"
         />
       </div>
 
-      {/* Table */}
+      {/* Inventory Table */}
       <div className="overflow-x-auto bg-white dark:bg-gray-900 rounded-xl border">
         {loading ? (
           <div className="p-6 flex justify-center">
@@ -208,8 +214,8 @@ const Inventory = () => {
                     <td className="p-3">
                       <div className="font-medium">{i.name}</div>
                       {i.sku && (
-                        <div className="text-xs text-gray-500">
-                          SKU: {i.sku}
+                        <div className="text-xs text-gray-500 flex items-center gap-1">
+                          <Barcode size={12} /> {i.sku}
                         </div>
                       )}
                     </td>
@@ -217,7 +223,10 @@ const Inventory = () => {
                     <td className="p-3 flex items-center gap-1 justify-center">
                       {i.quantity}
                       {isLowStock(i) && (
-                        <AlertTriangle size={14} className="text-red-500" />
+                        <AlertTriangle
+                          size={14}
+                          className="text-red-500"
+                        />
                       )}
                     </td>
 
@@ -283,12 +292,12 @@ const Inventory = () => {
 };
 
 /* =====================================================
-   Small Components
+   Reusable Components
 ===================================================== */
-const Stat = ({ label, value, color }) => (
-  <div className={`bg-${color}-100 dark:bg-${color}-900/30 p-4 rounded-xl`}>
+const Stat = ({ label, value }) => (
+  <div className="bg-blue-100 dark:bg-blue-900/30 p-4 rounded-xl">
     <span className="text-sm">{label}</span>
-    <div className={`font-bold text-${color}-600`}>{value}</div>
+    <div className="font-bold text-blue-600">{value}</div>
   </div>
 );
 

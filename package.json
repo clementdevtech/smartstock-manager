@@ -4,12 +4,21 @@
   "private": true,
   "main": "electron/main.js",
 
+  "author": "Clement DevTech",
+  "description": "SmartStock POS – Offline-first inventory & sales system",
+
   "devDependencies": {
     "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
     "electron": "^40.0.0",
     "electron-builder": "^26.4.0",
-    "wait-on": "^7.2.0",
-    "cross-env": "^7.0.3"
+    "wait-on": "^7.2.0"
+  },
+
+  "dependencies": {
+    "@zxing/browser": "^0.1.5",
+    "dotenv": "^17.2.3",
+    "electron-updater": "^6.7.3"
   },
 
   "scripts": {
@@ -19,7 +28,6 @@
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
 
     "build:client": "cd client && npm run build",
-
     "build": "npm run build:client && electron-builder"
   },
 
@@ -27,8 +35,13 @@
     "appId": "com.smartstock.pos",
     "productName": "SmartStock POS",
 
-    "asar": false,
-    "publish": null,
+    "asar": true,
+    "asarUnpack": [
+      "server/**",
+      "**/*.node"
+    ],
+
+    "npmRebuild": false,
 
     "directories": {
       "output": "dist"
@@ -48,9 +61,19 @@
       }
     ],
 
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "clementdevtech",
+        "repo": "smartstock-manager",
+        "releaseType": "release"
+      }
+    ],
+
     "win": {
       "icon": "electron/icon.ico",
-      "target": "nsis"
+      "target": "nsis",
+      "forceCodeSigning": false
     },
 
     "linux": {
@@ -59,7 +82,8 @@
 
     "mac": {
       "icon": "electron/icon.icns",
-      "target": "dmg"
+      "target": "dmg",
+      "forceCodeSigning": false
     }
   }
 }
