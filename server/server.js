@@ -76,7 +76,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 SmartStock backend running on http://localhost:${PORT} (env: ${process.env.NODE_ENV || 'development'})`);
 });

@@ -6,29 +6,45 @@ const { autoUpdater } = require("electron-updater");
 
 const isDev = !app.isPackaged;
 
-let mainWindow;
-let splashWindow;
-let serverProcess;
+let mainWindow = null;
+let splashWindow = null;
+let serverProcess = null;
 
-/* ============================
-   🔒 Auto Update (Silent)
-============================ */
+/* ======================================================
+   🛑 SINGLE INSTANCE LOCK (prevents multi-launch bug)
+====================================================== */
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+  return;
+}
+
+app.on("second-instance", () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
+/* ======================================================
+   🔒 AUTO UPDATE (silent, production only)
+====================================================== */
 if (!isDev) {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on("error", (err) => {
-    console.error("Updater error:", err);
+    console.error("AutoUpdater error:", err);
   });
 
   autoUpdater.on("update-downloaded", () => {
-    console.log("Update downloaded, will install on quit");
+    console.log("Update downloaded — will install on quit");
   });
 }
 
-/* ============================
-   📍 Backend Path (asar-safe)
-============================ */
+/* ======================================================
+   📍 BACKEND PATH (asar-safe)
+====================================================== */
 function getServerPath() {
   if (isDev) {
     return path.join(__dirname, "..", "server", "server.js");
@@ -42,9 +58,9 @@ function getServerPath() {
   );
 }
 
-/* ============================
-   🔁 Start Backend (Prod)
-============================ */
+/* ======================================================
+   🔁 START BACKEND (production only)
+====================================================== */
 function startBackend() {
   if (isDev) return;
 
@@ -53,26 +69,27 @@ function startBackend() {
   serverProcess = spawn(process.execPath, [serverPath], {
     cwd: path.dirname(serverPath),
     env: {
+      ...process.env,
       NODE_ENV: "production",
-      PORT: "3333"
+      PORT: "3333" // SINGLE SOURCE OF TRUTH
     },
     stdio: "ignore",
     windowsHide: true
   });
 
   serverProcess.on("exit", (code) => {
-    console.log("Backend exited:", code);
+    console.log("Backend exited with code:", code);
   });
 }
 
-/* ============================
-   🔍 Wait for Backend
-============================ */
+/* ======================================================
+   🔍 WAIT FOR BACKEND TCP
+====================================================== */
 function waitForBackend(port, timeout = 10000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
 
-    const check = () => {
+    const tryConnect = () => {
       const socket = new net.Socket();
       socket.setTimeout(1000);
 
@@ -86,20 +103,20 @@ function waitForBackend(port, timeout = 10000) {
         if (Date.now() - start > timeout) {
           reject(new Error("Backend timeout"));
         } else {
-          setTimeout(check, 300);
+          setTimeout(tryConnect, 300);
         }
       });
 
       socket.connect(port, "127.0.0.1");
     };
 
-    check();
+    tryConnect();
   });
 }
 
-/* ============================
-   🪟 Splash Window
-============================ */
+/* ======================================================
+   🪟 SPLASH WINDOW
+====================================================== */
 function createSplash() {
   splashWindow = new BrowserWindow({
     width: 420,
@@ -114,9 +131,9 @@ function createSplash() {
   splashWindow.loadFile(path.join(__dirname, "splash.html"));
 }
 
-/* ============================
-   🪟 Main Window
-============================ */
+/* ======================================================
+   🪟 MAIN WINDOW
+====================================================== */
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -130,6 +147,10 @@ function createMainWindow() {
       nodeIntegration: false
     }
   });
+
+  // SECURITY: block navigation
+  mainWindow.webContents.on("will-navigate", (e) => e.preventDefault());
+  mainWindow.webContents.on("new-window", (e) => e.preventDefault());
 
   const startURL = isDev
     ? "http://localhost:5173"
@@ -153,9 +174,9 @@ function createMainWindow() {
   }
 }
 
-/* ============================
-   🚀 App Boot
-============================ */
+/* ======================================================
+   🚀 APP BOOT
+====================================================== */
 app.whenReady().then(async () => {
   createSplash();
   startBackend();
@@ -163,7 +184,7 @@ app.whenReady().then(async () => {
   try {
     await waitForBackend(3333);
   } catch {
-    console.warn("Backend not ready, continuing UI load");
+    console.warn("Backend not ready — continuing UI load");
   }
 
   createMainWindow();
@@ -173,6 +194,9 @@ app.whenReady().then(async () => {
   }
 });
 
+/* ======================================================
+   🧹 CLEAN EXIT
+====================================================== */
 app.on("window-all-closed", () => {
   if (serverProcess) serverProcess.kill();
   if (process.platform !== "darwin") app.quit();

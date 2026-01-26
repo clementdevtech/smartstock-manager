@@ -1,25 +1,36 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-export default defineConfig({
-  plugins: [react()],
+export default defineConfig(({ mode }) => {
+  // ✅ Load env properly
+  const env = loadEnv(mode, process.cwd(), "");
 
-  // Enable @ alias → "@/folder/file"
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+  const API_BASE = env.VITE_API_URL || "http://localhost:5000";
+
+  return {
+    base: "./", // REQUIRED for Electron
+
+    plugins: [react()],
+
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
     },
-  },
 
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": "http://localhost:5000",
+    server: {
+      port: 5173,
+      proxy: {
+        "/api": {
+          target: API_BASE,
+          changeOrigin: true,
+        },
+      },
     },
-  },
 
-  build: {
-    outDir: "dist",
-  },
+    build: {
+      outDir: "dist",
+    },
+  };
 });
