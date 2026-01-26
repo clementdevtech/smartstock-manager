@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import { login } from "../services/auth";
 import { useToast } from "../hooks/use-toast";
+import { Link } from "react-router-dom";
 
 import {
   Card,
@@ -54,7 +55,7 @@ export default function Login() {
       });
 
       /**
-       * ✅ SPA-safe navigation (NO PAGE RELOAD)
+       * SPA-safe navigation (NO PAGE RELOAD)
        */
       if (res.user.role === "admin") {
         navigate("/dashboard", { replace: true });
@@ -160,9 +161,7 @@ export default function Login() {
 
               <p className="text-sm text-center text-muted-foreground">
                 Don’t have an account?{" "}
-                <a href="/register" className="text-emerald-700 font-semibold">
-                  Create one
-                </a>
+                <Link to="/register">Create account</Link>
               </p>
             </CardFooter>
           </form>

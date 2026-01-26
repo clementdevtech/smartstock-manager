@@ -5,6 +5,8 @@ import Footer from "./components/Footer";
 import AdminRoute from "./components/AdminRoute";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { AuthProvider, AuthContext } from "./context/AuthContext";
+import { ToastProvider } from "@/components/ui/toast";
+import { Toaster } from "./components/ui/toaster";
 
 /* ⚡ Lazy-loaded pages */
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -36,16 +38,22 @@ function AppContent() {
   const { user, loading } = useContext(AuthContext);
   const location = useLocation();
 
-  /* Hide layout on auth pages */
+  /* 🔍 Normalize path for HashRouter & BrowserRouter */
+  const currentPath = location.pathname;
+
+  /* 🧱 Hide layout on auth-related pages */
   const authPages = [
     "/login",
     "/register",
     "/forgot-password",
     "/verify-reset-code",
   ];
-  const hideLayout = authPages.includes(location.pathname);
 
-  /* ⛔ WAIT for auth to hydrate */
+  const hideLayout = authPages.some((path) =>
+    currentPath.startsWith(path)
+  );
+
+  /* ⛔ WAIT until auth state is resolved */
   if (loading) return <LoadingScreen />;
 
   return (
@@ -56,17 +64,17 @@ function AppContent() {
         <Suspense fallback={<LoadingScreen />}>
           <Routes>
 
-            {/* 🔁 SAFE ROOT */}
+            {/* 🔁 ROOT ROUTE */}
             <Route
               path="/"
               element={
                 user
                   ? <Navigate to="/pos" replace />
-                  : <Navigate to="/login" replace />
+                  : <Navigate to="/register" replace />
               }
             />
 
-            {/* 🧾 POS — Admin + User */}
+            {/* 🧾 POS — All authenticated users */}
             <Route
               path="/pos"
               element={
@@ -132,7 +140,7 @@ function AppContent() {
               }
             />
 
-            {/* 🔓 PUBLIC */}
+            {/* 🔓 PUBLIC AUTH */}
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
 
@@ -141,18 +149,11 @@ function AppContent() {
             <Route path="/verify-reset-code" element={<VerifyResetCode />} />
             <Route path="/reset-password/:token" element={<ResetPassword />} />
 
-            {/* ⚠️ 404 */}
+            {/* ⚠️ FALLBACK */}
             <Route
               path="*"
               element={
-                <div className="text-center py-20">
-                  <h2 className="text-2xl font-bold text-gray-700 dark:text-gray-300">
-                    404 — Page Not Found
-                  </h2>
-                  <p className="text-gray-500 dark:text-gray-400 mt-2">
-                    The page you’re looking for doesn’t exist.
-                  </p>
-                </div>
+                <Navigate to={user ? "/pos" : "/register"} replace />
               }
             />
 
@@ -165,11 +166,14 @@ function AppContent() {
   );
 }
 
+/* 🔐 AuthProvider wrapped ONCE */
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <ToastProvider>
+        <AppContent />
+        <Toaster />
+      </ToastProvider>
     </AuthProvider>
   );
 }
-    

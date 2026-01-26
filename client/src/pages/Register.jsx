@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useContext } from "react";
+import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Check, X } from "lucide-react";
 import { useForm } from "react-hook-form";
@@ -279,7 +280,7 @@ export default function Register() {
         <input
           {...register("storeName", { required: true })}
           className="w-full mt-1 p-3 border rounded-lg bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
-          placeholder="My Supermart Ltd"
+          placeholder="My Store"
         />
       </label>
 
@@ -377,6 +378,10 @@ export default function Register() {
           Next: Verify Email
         </button>
       </div>
+
+    <Link to="/login" className="text-emerald-600 hover:underline">
+      Already have an account? Login
+      </Link>
     </div>
   );
 
