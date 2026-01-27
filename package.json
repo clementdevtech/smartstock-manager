@@ -24,11 +24,13 @@
   "scripts": {
     "dev:client": "cd client && npm run dev",
     "dev:server": "cd server && npm run dev",
-
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
-
     "build:client": "cd client && npm run build",
-    "build": "npm run build:client && electron-builder"
+    "build": "npm run build:client && electron-builder",
+    "build:win": "npm run build:client && electron-builder --win",
+    "build:linux": "npm run build:client && electron-builder --linux",
+    "build:mac": "npm run build:client && electron-builder --mac",
+    "clear-cache": "node electron/clear-cache.js"
   },
 
   "build": {
@@ -44,7 +46,8 @@
     "npmRebuild": false,
 
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
 
     "files": [
@@ -71,19 +74,46 @@
     ],
 
     "win": {
-      "icon": "electron/icon.ico",
-      "target": "nsis",
-      "forceCodeSigning": false
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        },
+        {
+          "target": "msi",
+          "arch": ["x64", "ia32"]
+        }
+      ],
+      "artifactName": "SmartStock-POS-Setup-${version}-${arch}.exe"
+    },
+
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer/installer.nsh",
+      "uninstallDisplayName": "SmartStock POS",
+      "deleteAppDataOnUninstall": false
     },
 
     "linux": {
-      "target": "AppImage"
+      "icon": "build",
+      "target": ["AppImage", "deb"],
+      "artifactName": "SmartStock-POS-${version}-${arch}.${ext}"
     },
 
     "mac": {
-      "icon": "electron/icon.icns",
-      "target": "dmg",
-      "forceCodeSigning": false
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "artifactName": "SmartStock-POS-${version}-${arch}.dmg",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist"
     }
   }
 }
