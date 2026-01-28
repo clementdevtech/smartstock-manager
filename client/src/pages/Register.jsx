@@ -56,7 +56,9 @@ export default function Register() {
   // Product key state
   const [productKey, setProductKey] = useState("");
   const [productKeyStatus, setProductKeyStatus] = useState(null); // null | 'checking' | 'valid' | 'invalid'
-  const productKeyRef = useRef(null);
+  //const productKeyRef = useRef(null);
+  const productKeyRef = useRef("");
+
 
   // Email (controlled) + existence check
   const [emailInput, setEmailInput] = useState("");
@@ -66,6 +68,7 @@ export default function Register() {
   const [verificationSent, setVerificationSent] = useState(false);
   const [verificationLoading, setVerificationLoading] = useState(false);
   const [verificationSuccess, setVerificationSuccess] = useState(false);
+  const [success, setSuccess] = useState(false);
 
   const [logoPreview, setLogoPreview] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
@@ -87,55 +90,60 @@ export default function Register() {
   }, []);
 
   // --- PRODUCT KEY INPUT HANDLER (preserves caret) ---
-  const onProductKeyChange = async (e) => {
-    const input = e.target;
-    const raw = input.value;
-    const oldCursor = input.selectionStart ?? raw.length;
+const onProductKeyChange = async (e) => {
+  const input = e.target;
+  const raw = input.value;
+  const oldCursor = input.selectionStart ?? raw.length;
 
-    // Format
-    const formatted = formatProductKey(raw);
+  // 🔹 Format product key (XXXXXX-XXXXXX-XXXXXX)
+  const formatted = formatProductKey(raw);
 
-    // Update local state + react-hook-form value
-    setProductKey(formatted);
-    setValue("productKey", formatted);
+  // 🔹 Update local state + react-hook-form
+  setProductKey(formatted);
+  setValue("productKey", formatted, {
+    shouldDirty: true,
+    shouldTouch: true,
+  });
 
-    // After render, restore caret position correctly.
-    // We'll calculate how many dashes existed before the old cursor and after formatting.
-    requestAnimationFrame(() => {
-      try {
-        // Count non-alphanum removed before cursor in raw:
-        const leftRaw = raw.slice(0, oldCursor);
-        const cleanedLeft = leftRaw.replace(/[^A-Za-z0-9]/g, "");
-        // New cursor position = cleanedLeft length plus number of dashes inserted before that position
-        let newCursor = cleanedLeft.length;
-        // Insert dashes positions: after 6 and after 12 raw chars
-        if (newCursor > 6) newCursor += 1;
-        if (newCursor > 12) newCursor += 1;
-        const inputEl = productKeyRef.current;
-        if (inputEl && typeof inputEl.setSelectionRange === "function")
-          inputEl.setSelectionRange(newCursor, newCursor);
-      } catch {
-        /* ignore caret restore errors */
-      }
-    });
-
-    // Validate only when raw cleaned length reaches 18 (complete key)
-    const cleaned = formatted.replace(/-/g, "");
-    if (cleaned.length < 18) {
-      setProductKeyStatus(null);
-      return;
-    }
-
-    // Validate key (show checking state)
-    setProductKeyStatus("checking");
+  // 🔹 Restore caret position after React re-render
+  requestAnimationFrame(() => {
     try {
-      // backend normalizes, you can send formatted or cleaned; backend will handle normalization
-      const res = await validateProductKey(formatted);
-      setProductKeyStatus(res && res.valid ? "valid" : "invalid");
+      // Text to the left of the old cursor
+      const leftRaw = raw.slice(0, oldCursor);
+
+      // Strip non-alphanumerics
+      const cleanedLeft = leftRaw.replace(/[^A-Za-z0-9]/g, "");
+
+      // Base cursor position
+      let newCursor = cleanedLeft.length;
+
+      // Account for inserted dashes
+      if (newCursor > 6) newCursor += 1;
+      if (newCursor > 12) newCursor += 1;
+
+      input.setSelectionRange(newCursor, newCursor);
     } catch {
-      setProductKeyStatus("invalid");
+      /* caret restore failure is non-fatal */
     }
-  };
+  });
+
+  // 🔹 Validate only when full key is entered (18 chars)
+  const cleaned = formatted.replace(/-/g, "");
+  if (cleaned.length < 18) {
+    setProductKeyStatus(null);
+    return;
+  }
+
+  // 🔹 Async validation
+  setProductKeyStatus("checking");
+  try {
+    const res = await validateProductKey(formatted);
+    setProductKeyStatus(res?.valid ? "valid" : "invalid");
+  } catch {
+    setProductKeyStatus("invalid");
+  }
+};
+
 
   // --- EMAIL DEBOUNCE (controlled input) ---
   useEffect(() => {
@@ -250,14 +258,14 @@ export default function Register() {
       const res = await registerApi(finalPayload);
 
       // login via context and redirect
-      loginUser(res.user);
-      alert("Registration successful!");
-      window.location.href = "/dashboard";
-    } catch (err) {
-      alert(err.message || "Registration failed.");
-    } finally {
-      setLoading(false);
+     alert("Registration successful! Please login.");
+       setSuccess(true);
+      } catch (err) {
+         alert(err.message || "Registration failed.");
+      } finally {
+         setLoading(false);
     }
+
   };
 
   // Password requirements
@@ -302,41 +310,54 @@ export default function Register() {
       </label>
 
       <label className="block text-gray-700 dark:text-gray-300">
-        <span className="text-sm font-medium">Product Key</span>
-        <input
-          name="productKey"
-          ref={productKeyRef}
-          value={productKey}
-          onChange={onProductKeyChange}
-          placeholder="XXXXXX-XXXXXX-XXXXXX"
-          maxLength={20} // 18 chars + 2 dashes = 20
-          className="w-full mt-1 p-3 border rounded-lg uppercase tracking-widest bg-white dark:bg-gray-800 dark:text-gray-100 border-gray-300 dark:border-gray-700"
-        />
+  <span className="text-sm font-medium">Product Key</span>
 
-        <div className="mt-2 flex items-center gap-2 text-sm">
-          {productKeyStatus === "checking" && (
-            <span className="text-gray-600 dark:text-gray-400">Checking key...</span>
-          )}
+  <input
+    name="productKey"
+    value={productKey}
+    onChange={onProductKeyChange}
+    placeholder="XXXXXX-XXXXXX-XXXXXX"
+    maxLength={20} // 18 chars + 2 dashes
+    autoComplete="off"
+    spellCheck={false}
+    className="
+      w-full mt-1 p-3 border rounded-lg
+      uppercase tracking-widest
+      bg-white dark:bg-gray-800 dark:text-gray-100
+      border-gray-300 dark:border-gray-700
+      focus:outline-none focus:ring-2 focus:ring-emerald-500
+    "
+  />
 
-          {productKeyStatus === "valid" && (
-            <span className="flex items-center text-green-600 gap-1">
-              <Check size={18} /> Valid key
-            </span>
-          )}
+  <div className="mt-2 flex items-center gap-2 text-sm">
+    {productKeyStatus === "checking" && (
+      <span className="text-gray-600 dark:text-gray-400">
+        Checking key…
+      </span>
+    )}
 
-          {productKeyStatus === "invalid" && (
-            <span className="flex items-center text-red-600 gap-1">
-              <X size={18} /> Invalid key
-            </span>
-          )}
+    {productKeyStatus === "valid" && (
+      <span className="flex items-center gap-1 text-green-600">
+        <Check size={18} />
+        Valid key
+      </span>
+    )}
 
-          {!productKeyStatus && (
-            <span className="text-gray-500 dark:text-gray-400">
-              Enter your 18-character product key (6-6-6)
-            </span>
-          )}
-        </div>
-      </label>
+    {productKeyStatus === "invalid" && (
+      <span className="flex items-center gap-1 text-red-600">
+        <X size={18} />
+        Invalid key
+      </span>
+    )}
+
+    {!productKeyStatus && (
+      <span className="text-gray-500 dark:text-gray-400">
+        Enter your 18-character product key (6-6-6)
+      </span>
+    )}
+  </div>
+</label>
+
 
       <label className="block text-gray-700 dark:text-gray-300">
         <span className="text-sm font-medium">Invite Code (optional)</span>
@@ -603,14 +624,26 @@ export default function Register() {
       </div>
 
       <div className="flex justify-between mt-4">
-        <button onClick={() => setStep(3)} className="px-4 py-2 border rounded dark:border-gray-700 dark:text-gray-200">Back</button>
+        <button
+           onClick={() => setStep(3)}
+           className="px-4 py-2 border rounded dark:border-gray-700 dark:text-gray-200"
+        > Back </button>
 
-        <button onClick={handleSubmit(onSubmit)} disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+        <button
+           onClick={handleSubmit(onSubmit)}
+           disabled={loading}
+           className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
           {loading ? "Creating account..." : "Create account"}
-        </button>
+       </button>
       </div>
+
     </div>
   );
+
+  if (success) {
+      return <Navigate to="/login" replace />;
+   }
 
   // --- Render ---
   return (

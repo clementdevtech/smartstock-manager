@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => {
   // ✅ Load env properly
   const env = loadEnv(mode, process.cwd(), "");
 
-  const API_BASE = env.VITE_API_URL || "http://localhost:5000";
+  const API_BASE = env.VITE_API_URL || "http://localhost:3333";
 
   return {
     base: "./", // REQUIRED for Electron

@@ -1,0 +1,56 @@
+name: SmartStock Desktop – Multi Platform Build
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # ⬇️ Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ⬇️ Setup Node
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      # ⬇️ Install dependencies
+      - name: Install dependencies
+        run: npm install
+
+      # ⬇️ Build client (Vite/React/etc)
+      - name: Build client
+        run: npm run build:client
+
+      # ⬇️ Build Electron app
+      - name: Build Electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            npm run build:win
+          elif [[ "$RUNNER_OS" == "Linux" ]]; then
+            npm run build:linux
+          else
+            npm run build:mac
+          fi
+
+      # ⬇️ Upload artifacts (optional but useful)
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: smartstock-${{ runner.os }}
+          path: dist/

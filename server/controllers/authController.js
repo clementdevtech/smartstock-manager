@@ -87,10 +87,36 @@ exports.verifyEmailCode = async (req, res) => {
   try {
     const { email, code } = req.body;
 
+    console.log(req.body);
+
     const record = await VerificationCode.findOne({ email, code });
-    if (!record || record.expiresAt < Date.now()) {
-      return res.status(400).json({ message: "Invalid or expired code" });
+    if (!record) {
+      console.log("No record found");
+      return res.status(400).json({
+        error: "CODE_NOT_FOUND",
+        message: "Verification code does not exist for this email",
+      });
     }
+
+    if (!record.expiresAt) {
+      cosole.log("No expiry data");
+      return res.status(400).json({
+          error: "CODE_NO_EXPIRY",
+          message: "Verification code is missing expiration data",
+        });
+      }
+
+
+    if (record.expiresAt.getTime() < Date.now()) {
+      cosole.log("Code expired");
+        return res.status(400).json({
+          error: "CODE_EXPIRED",
+          message: "Verification code has expired",
+          expiredAt: record.expiresAt,
+        });
+      }
+
+
 
     // 🔐 Generate reset token
     const resetToken = crypto.randomBytes(32).toString("hex");
@@ -443,7 +469,13 @@ exports.resendResetCode = async (req, res) => {
     // Remove old codes
     await VerificationCode.deleteMany({ email });
 
-    await VerificationCode.create({ email, code, createdAt: new Date() });
+    await VerificationCode.create({
+        email,
+        code,
+        createdAt: new Date(),
+        expiresAt: Date.now() + 10 * 60 * 1000,
+      });
+
 
     const html = `
       <div style="font-family: Arial; padding: 20px;">
