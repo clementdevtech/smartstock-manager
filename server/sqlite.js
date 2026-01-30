@@ -1,32 +1,60 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 /* =====================================================
-   DATABASE SETUP
+   WRITEABLE APP DATA DIRECTORY (ELECTRON + PROD SAFE)
 ===================================================== */
-const DB_DIR = path.join(__dirname);
-const DB_PATH = path.join(DB_DIR, "data.db");
+function getAppDataDir() {
+  const appName = "SmartStockPOS";
 
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA || os.homedir(), appName);
+  }
+
+  if (process.platform === "darwin") {
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      appName
+    );
+  }
+
+  return path.join(os.homedir(), ".config", appName);
 }
 
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL"); // 🔥 critical for POS reliability
-
-console.log("📦 SQLite initialized:", DB_PATH);
+const DATA_DIR = getAppDataDir();
+const DB_PATH = path.join(DATA_DIR, "data.db");
 
 /* =====================================================
-   TABLES
+   ENSURE DATA DIRECTORY EXISTS
+===================================================== */
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+/* =====================================================
+   SQLITE INIT
+===================================================== */
+const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
+
+console.log("📦 SQLite initialized at:", DB_PATH);
+
+/* =====================================================
+   BASE TABLES
 ===================================================== */
 db.exec(`
 /* ================================
-   LOCAL USERS (OFFLINE AUTH)
+   LOCAL USERS (OFFLINE CACHE)
 ================================ */
 CREATE TABLE IF NOT EXISTS local_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE,
+  phone TEXT,
   password TEXT,
   storeId TEXT,
   adminId TEXT,
@@ -35,7 +63,7 @@ CREATE TABLE IF NOT EXISTS local_users (
 );
 
 /* ================================
-   INVENTORY (OFFLINE BARCODE CORE)
+   INVENTORY
 ================================ */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,27 +94,22 @@ CREATE INDEX IF NOT EXISTS idx_local_items_sku ON local_items (sku);
 CREATE INDEX IF NOT EXISTS idx_local_items_store ON local_items (storeId);
 
 /* ================================
-   OFFLINE SALES QUEUE (🔥 CORE)
+   OFFLINE SALES QUEUE
 ================================ */
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-
   mongoId TEXT,
   receiptNo TEXT UNIQUE,
-
-  items TEXT NOT NULL,         -- JSON
+  items TEXT NOT NULL,
   subtotal REAL,
   tax REAL,
   total REAL,
-
   paymentType TEXT,
   paymentStatus TEXT,
-
   cashierId TEXT,
   storeId TEXT,
   adminId TEXT,
-
-  status TEXT DEFAULT 'pending', -- pending | synced | failed
+  status TEXT DEFAULT 'pending',
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
 );
@@ -95,12 +118,12 @@ CREATE INDEX IF NOT EXISTS idx_offline_sales_status
   ON offline_sales (status);
 
 /* ================================
-   RECEIPTS (REPRINTABLE)
+   RECEIPTS
 ================================ */
 CREATE TABLE IF NOT EXISTS receipts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   saleId INTEGER,
-  receiptData TEXT, -- JSON snapshot
+  receiptData TEXT,
   printed INTEGER DEFAULT 0,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -110,40 +133,33 @@ CREATE TABLE IF NOT EXISTS receipts (
 ================================ */
 CREATE TABLE IF NOT EXISTS cashier_shifts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-
   cashierId TEXT,
   storeId TEXT,
-
   openingCash REAL DEFAULT 0,
   closingCash REAL,
   expectedCash REAL,
-
   openedAt TEXT DEFAULT CURRENT_TIMESTAMP,
   closedAt TEXT,
-
-  status TEXT DEFAULT 'open' -- open | closed
+  status TEXT DEFAULT 'open'
 );
 
 /* ================================
-   Z-REPORTS (END OF DAY)
+   Z-REPORTS
 ================================ */
 CREATE TABLE IF NOT EXISTS z_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-
   storeId TEXT,
   cashierId TEXT,
-
   totalSales REAL,
   cashSales REAL,
   cardSales REAL,
   mobileSales REAL,
-
   transactionCount INTEGER,
   generatedAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 /* ================================
-   SYNC META / LICENSE
+   META
 ================================ */
 CREATE TABLE IF NOT EXISTS sync_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,24 +192,38 @@ CREATE TABLE IF NOT EXISTS invite_codes (
 `);
 
 /* =====================================================
-   DB WRAPPER (SAFE + FAST)
+   🔥 SAFE MIGRATIONS (NO CRASH EVER)
+===================================================== */
+function migrate(table, column, type = "TEXT") {
+  const cols = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .map(c => c.name);
+
+  if (!cols.includes(column)) {
+    console.log(`🛠 Migrating: ${table}.${column}`);
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
+// Example future-proof migrations
+migrate("local_users", "phone", "TEXT");
+
+/* =====================================================
+   DB WRAPPER
 ===================================================== */
 module.exports = {
   run(sql, params = []) {
     return db.prepare(sql).run(params);
   },
-
   get(sql, params = []) {
     return db.prepare(sql).get(params);
   },
-
   all(sql, params = []) {
     return db.prepare(sql).all(params);
   },
-
   transaction(fn) {
     return db.transaction(fn)();
   },
-
-  db,
+  db
 };

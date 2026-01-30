@@ -1,16 +1,19 @@
 const asyncHandler = require("express-async-handler");
+const mongoose = require("mongoose");
 const Item = require("../models/Item");
 const Sale = require("../models/Sale");
 const sendEmail = require("../utils/email");
+const sqlite = require("../db/sqlite");
 
-/**
- * ASSUMPTIONS:
- * req.user contains:
- *  - req.user.id
- *  - req.user.storeId
- *  - req.user.adminId
- *  - req.user.email   (store owner / admin email)
- */
+/* =====================================================
+   HELPERS
+===================================================== */
+const isOnline = () => mongoose.connection.readyState === 1;
+
+const getTenant = (req) => ({
+  storeId: req.user.storeId,
+  adminId: req.user.adminId || req.user.id,
+});
 
 /* =====================================================
    INTERNAL: LOW STOCK EMAIL
@@ -20,81 +23,116 @@ const sendLowStockEmail = async (item, userEmail) => {
 
   const html = `
     <h2>⚠️ Low Stock Alert</h2>
-    <p>The following item is running low:</p>
     <ul>
       <li><strong>Name:</strong> ${item.name}</li>
       <li><strong>SKU:</strong> ${item.sku}</li>
       <li><strong>Quantity Left:</strong> ${item.quantity}</li>
-      <li><strong>Low Stock Threshold:</strong> ${item.lowStockThreshold}</li>
+      <li><strong>Threshold:</strong> ${item.lowStockThreshold}</li>
     </ul>
-    <p>Please restock soon to avoid lost sales.</p>
-    <hr />
     <small>SmartStock Manager</small>
   `;
 
-  await sendEmail(
-    userEmail,
-    `⚠️ Low Stock Alert: ${item.name}`,
-    html
-  );
+  await sendEmail(userEmail, `Low Stock: ${item.name}`, html);
 };
 
 /* =====================================================
-   @desc    Get all items
+   GET ITEMS (SQLite → Mongo fallback)
 ===================================================== */
 const getItems = asyncHandler(async (req, res) => {
-  const items = await Item.find({
-    store: req.user.storeId,
-    admin: req.user.adminId || req.user.id,
-  }).sort({ createdAt: -1 });
+  const { storeId, adminId } = getTenant(req);
 
-  res.json(items);
+  // 📴 OFFLINE → SQLITE
+  const localItems = sqlite.all(
+    `SELECT * FROM local_items
+     WHERE storeId = ? AND adminId = ?
+     ORDER BY updatedAt DESC`,
+    [storeId, adminId]
+  );
+
+  if (!isOnline()) {
+    return res.json(localItems);
+  }
+
+  // ☁️ ONLINE → MongoDB sync refresh
+  const remoteItems = await Item.find({
+    store: storeId,
+    admin: adminId,
+  }).sort({ updatedAt: -1 });
+
+  res.json(remoteItems);
 });
 
 /* =====================================================
-   @desc    Get single item
+   GET ITEM BY ID (SQLite-first)
 ===================================================== */
 const getItemById = asyncHandler(async (req, res) => {
-  const item = await Item.findById(req.params.id);
+  const { storeId, adminId } = getTenant(req);
 
-  if (!item) {
+  const local = sqlite.get(
+    `SELECT * FROM local_items
+     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
+    [req.params.id, storeId, adminId]
+  );
+
+  if (local) return res.json(local);
+
+  if (!isOnline()) {
+    res.status(404);
+    throw new Error("Item not found offline");
+  }
+
+  const remote = await Item.findOne({
+    _id: req.params.id,
+    store: storeId,
+    admin: adminId,
+  });
+
+  if (!remote) {
     res.status(404);
     throw new Error("Item not found");
   }
 
-  if (
-    item.store.toString() !== req.user.storeId ||
-    item.admin.toString() !== (req.user.adminId || req.user.id)
-  ) {
-    res.status(403);
-    throw new Error("Not authorized");
-  }
-
-  res.json(item);
+  res.json(remote);
 });
 
 /* =====================================================
-   @desc    Get item by barcode (POS)
+   GET ITEM BY BARCODE (POS CORE)
 ===================================================== */
 const getItemByBarcode = asyncHandler(async (req, res) => {
-  const item = await Item.findOne({
-    sku: req.params.sku,
-    store: req.user.storeId,
-    admin: req.user.adminId || req.user.id,
-  });
+  const { storeId, adminId } = getTenant(req);
 
-  if (!item) {
+  const local = sqlite.get(
+    `SELECT * FROM local_items
+     WHERE sku = ? AND storeId = ? AND adminId = ?`,
+    [req.params.sku, storeId, adminId]
+  );
+
+  if (local) return res.json(local);
+
+  if (!isOnline()) {
     res.status(404);
-    throw new Error("Item not found for this barcode");
+    throw new Error("Item not found offline");
   }
 
-  res.json(item);
+  const remote = await Item.findOne({
+    sku: req.params.sku,
+    store: storeId,
+    admin: adminId,
+  });
+
+  if (!remote) {
+    res.status(404);
+    throw new Error("Item not found");
+  }
+
+  res.json(remote);
 });
 
 /* =====================================================
-   @desc    Create item
+   CREATE ITEM (OFFLINE FIRST)
 ===================================================== */
 const createItem = asyncHandler(async (req, res) => {
+  const { storeId, adminId } = getTenant(req);
   const {
     name,
     sku,
@@ -111,117 +149,143 @@ const createItem = asyncHandler(async (req, res) => {
     lowStockThreshold,
   } = req.body;
 
-  if (!name || !sku || !retailPrice || !quantity || !entryDate) {
-    res.status(400);
-    throw new Error("Missing required fields");
-  }
-
-  const exists = await Item.findOne({
-    sku,
-    store: req.user.storeId,
-    admin: req.user.adminId || req.user.id,
-  });
-
-  if (exists) {
-    res.status(400);
-    throw new Error("This barcode already exists in this store");
-  }
-
-  const item = await Item.create({
-    name,
-    sku,
-    category,
-    unit,
-    wholesalePrice,
-    retailPrice,
-    quantity,
-    entryDate,
-    expiryDate,
-    batchNumber,
-    supplier,
-    imageUrl,
-    lowStockThreshold,
-    admin: req.user.adminId || req.user.id,
-    store: req.user.storeId,
-    createdBy: req.user.id,
-  });
-
-  // 🔔 Low stock check on creation
-  if (item.quantity <= item.lowStockThreshold) {
-    await sendLowStockEmail(item, req.user.email);
-  }
-
-  res.status(201).json(item);
-});
-
-/* =====================================================
-   @desc    Update item (POS stock deduction hits here)
-===================================================== */
-const updateItem = asyncHandler(async (req, res) => {
-  const item = await Item.findById(req.params.id);
-
-  if (!item) {
-    res.status(404);
-    throw new Error("Item not found");
-  }
-
-  if (
-    item.store.toString() !== req.user.storeId ||
-    item.admin.toString() !== (req.user.adminId || req.user.id)
-  ) {
-    res.status(403);
-    throw new Error("Not authorized");
-  }
-
-  const updatedItem = await Item.findByIdAndUpdate(
-    req.params.id,
-    { ...req.body, createdBy: req.user.id },
-    { new: true, runValidators: true }
+  // 🗄️ Write to SQLite FIRST
+  sqlite.run(
+    `INSERT INTO local_items
+     (sku, name, category, unit, wholesalePrice, retailPrice,
+      quantity, lowStockThreshold, batchNumber, expiryDate,
+      adminId, storeId, lastSyncedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    [
+      sku,
+      name,
+      category,
+      unit,
+      wholesalePrice,
+      retailPrice,
+      quantity,
+      lowStockThreshold,
+      batchNumber,
+      expiryDate,
+      adminId,
+      storeId,
+    ]
   );
 
-  // 🔔 Low stock alert AFTER update
-  if (
-    updatedItem.quantity <= updatedItem.lowStockThreshold
-  ) {
-    await sendLowStockEmail(updatedItem, req.user.email);
+  sqlite.run(
+    `INSERT INTO sync_log (entity, action)
+     VALUES ('item', 'create')`
+  );
+
+  // ☁️ Sync immediately if online
+  if (isOnline()) {
+    const mongoItem = await Item.create({
+      name,
+      sku,
+      category,
+      unit,
+      wholesalePrice,
+      retailPrice,
+      quantity,
+      entryDate,
+      expiryDate,
+      batchNumber,
+      supplier,
+      imageUrl,
+      lowStockThreshold,
+      admin: adminId,
+      store: storeId,
+      createdBy: req.user.id,
+    });
+
+    sqlite.run(
+      `UPDATE local_items
+       SET mongoId = ?, lastSyncedAt = CURRENT_TIMESTAMP
+       WHERE sku = ? AND storeId = ? AND adminId = ?`,
+      [mongoItem._id.toString(), sku, storeId, adminId]
+    );
   }
 
-  res.json(updatedItem);
+  res.status(201).json({ message: "Item created (offline-first)" });
 });
 
 /* =====================================================
-   @desc    Delete item
+   UPDATE ITEM (POS SAFE)
+===================================================== */
+const updateItem = asyncHandler(async (req, res) => {
+  const { storeId, adminId } = getTenant(req);
+
+  sqlite.run(
+    `UPDATE local_items
+     SET quantity = ?, updatedAt = CURRENT_TIMESTAMP
+     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
+    [req.body.quantity, req.params.id, storeId, adminId]
+  );
+
+  sqlite.run(
+    `INSERT INTO sync_log (entity, action)
+     VALUES ('item', 'update')`
+  );
+
+  if (isOnline()) {
+    await Item.findOneAndUpdate(
+      { _id: req.params.id, store: storeId, admin: adminId },
+      { ...req.body, createdBy: req.user.id },
+      { runValidators: true }
+    );
+  }
+
+  res.json({ message: "Item updated (offline-first)" });
+});
+
+/* =====================================================
+   DELETE ITEM
 ===================================================== */
 const deleteItem = asyncHandler(async (req, res) => {
-  const item = await Item.findById(req.params.id);
+  const { storeId, adminId } = getTenant(req);
 
-  if (!item) {
-    res.status(404);
-    throw new Error("Item not found");
+  sqlite.run(
+    `DELETE FROM local_items
+     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
+    [req.params.id, storeId, adminId]
+  );
+
+  sqlite.run(
+    `INSERT INTO sync_log (entity, action)
+     VALUES ('item', 'delete')`
+  );
+
+  if (isOnline()) {
+    await Item.deleteOne({
+      _id: req.params.id,
+      store: storeId,
+      admin: adminId,
+    });
   }
 
-  if (
-    item.store.toString() !== req.user.storeId ||
-    item.admin.toString() !== (req.user.adminId || req.user.id)
-  ) {
-    res.status(403);
-    throw new Error("Not authorized");
-  }
-
-  await item.deleteOne();
-  res.json({ message: "Item removed successfully" });
+  res.json({ message: "Item deleted (offline-first)" });
 });
 
 /* =====================================================
-   @desc    WEEKLY BEST ITEMS REPORT (CRON READY)
+   WEEKLY BEST ITEMS (ONLINE ONLY)
 ===================================================== */
 const getWeeklyBestItems = asyncHandler(async (req, res) => {
+  if (!isOnline()) {
+    return res.json([]);
+  }
+
   const start = new Date();
   start.setDate(start.getDate() - 7);
 
   const report = await Sale.aggregate([
+    {
+      $match: {
+        createdAt: { $gte: start },
+        store: req.user.storeId,
+        admin: req.user.adminId || req.user.id,
+      },
+    },
     { $unwind: "$items" },
-    { $match: { createdAt: { $gte: start } } },
     {
       $group: {
         _id: "$items.item",

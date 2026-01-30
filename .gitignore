@@ -12,3 +12,6 @@ server/node_modules/
 AppData/
 .cache/
 release/
+
+# resource files
+resources/

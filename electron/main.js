@@ -1,22 +1,21 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
-const fs = require("fs");
 const { spawn } = require("child_process");
 const net = require("net");
 const { autoUpdater } = require("electron-updater");
 
 const isDev = !app.isPackaged;
 
-let mainWindow = null;
-let splashWindow = null;
-let backendProcess = null;
-let backendRestartTimer = null;
+let mainWindow;
+let splashWindow;
+let backendProcess;
+let backendRestartTimer;
+let backendCrashCount = 0;
 
 /* ======================================================
    🛑 SINGLE INSTANCE LOCK
 ====================================================== */
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) {
+if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
@@ -35,7 +34,7 @@ if (!isDev) {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on("error", (err) => {
+  autoUpdater.on("error", err => {
     console.error("❌ AutoUpdater error:", err);
   });
 
@@ -45,81 +44,80 @@ if (!isDev) {
 }
 
 /* ======================================================
-   📍 BACKEND COMMAND (DEV === PROD)
+   🔁 PATH HELPERS
 ====================================================== */
-function getBackendCommand() {
+function getServerPath() {
   if (isDev) {
-    return {
-      cmd: "node",
-      args: [path.join(__dirname, "..", "server", "server.js")]
-    };
+    return path.join(__dirname, "..", "server", "server.js");
   }
 
-  const exeName = process.platform === "win32" ? "backend.exe" : "backend";
-  const exePath = path.join(process.resourcesPath, "backend", exeName);
-
-  return {
-    cmd: exePath,
-    args: []
-  };
+  return path.join(
+    process.resourcesPath,
+    "app.asar.unpacked",
+    "server",
+    "server.js"
+  );
 }
 
 /* ======================================================
-   🔁 START / RESTART BACKEND
+   🔁 START BACKEND
+   Uses Electron internal Node runtime
 ====================================================== */
 function startBackend() {
-  if (isDev) return;
-  if (backendProcess) return;
+  if (backendProcess || isDev) return;
 
+  const serverPath = getServerPath();
+  const nodePath = process.execPath; // 🔥 CRITICAL FIX
 
-  const { cmd, args } = getBackendCommand();
+  console.log("🚀 Starting backend:", serverPath);
+  console.log("🟢 Using Electron Node:", nodePath);
 
-  if (!isDev && !fs.existsSync(cmd)) {
-    console.error("❌ Backend executable missing:", cmd);
-    return;
-  }
-
-  console.log("🚀 Starting backend:", cmd);
-
-  backendProcess = spawn(cmd, args, {
+  backendProcess = spawn(nodePath, [serverPath], {
+    cwd: path.dirname(serverPath),
     env: {
       ...process.env,
-      NODE_ENV: isDev ? "development" : "production",
+      ELECTRON_RUN_AS_NODE: "1",
+      NODE_ENV: "production",
       PORT: "3333"
     },
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
   });
 
-  backendProcess.on("error", (err) => {
-    console.error("❌ Backend spawn error:", err);
-  });
+  backendProcess.stdout.on("data", d =>
+    console.log("[BACKEND]", d.toString().trim())
+  );
 
-  backendProcess.on("exit", (code, signal) => {
-    console.error(`❌ Backend exited (code=${code}, signal=${signal})`);
+  backendProcess.stderr.on("data", d =>
+    console.error("[BACKEND ERROR]", d.toString().trim())
+  );
+
+  backendProcess.on("exit", code => {
+    console.error("❌ Backend exited with code:", code);
     backendProcess = null;
 
-    // 🔁 Auto-restart backend (production only)
-    if (!isDev) {
-      clearTimeout(backendRestartTimer);
-      backendRestartTimer = setTimeout(() => {
-        console.log("🔁 Restarting backend...");
-        startBackend();
-      }, 2000);
+    backendCrashCount++;
+
+    if (backendCrashCount > 5) {
+      console.error("🛑 Backend crash loop detected — stopping restart attempts.");
+      return;
     }
+
+    clearTimeout(backendRestartTimer);
+    backendRestartTimer = setTimeout(startBackend, 4000);
   });
 }
 
 /* ======================================================
-   ⏳ WAIT FOR BACKEND TCP
+   ⏳ WAIT FOR BACKEND
 ====================================================== */
-function waitForBackend(port, timeout = 20000) {
+function waitForBackend(port, timeout = 60000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
 
-    (function tryConnect() {
+    const check = () => {
       const socket = new net.Socket();
-      socket.setTimeout(1000);
+      socket.setTimeout(1200);
 
       socket.once("connect", () => {
         socket.destroy();
@@ -128,28 +126,27 @@ function waitForBackend(port, timeout = 20000) {
 
       socket.once("error", () => {
         socket.destroy();
+
         if (Date.now() - start > timeout) {
           reject(new Error("Backend timeout"));
         } else {
-          setTimeout(tryConnect, 400);
+          setTimeout(check, 700);
         }
       });
 
       socket.connect(port, "127.0.0.1");
-    })();
+    };
+
+    check();
   });
 }
 
 /* ======================================================
-   🎨 WINDOW ICON
+   🎨 ICON
 ====================================================== */
-function getWindowIcon() {
-  if (process.platform === "win32") {
-    return path.join(__dirname, "icon.ico");
-  }
-  if (process.platform === "darwin") {
-    return path.join(__dirname, "icon.icns");
-  }
+function getIcon() {
+  if (process.platform === "win32") return path.join(__dirname, "icon.ico");
+  if (process.platform === "darwin") return path.join(__dirname, "icon.icns");
   return path.join(__dirname, "icon-1024.png");
 }
 
@@ -164,7 +161,7 @@ function createSplash() {
     transparent: true,
     resizable: false,
     alwaysOnTop: true,
-    icon: getWindowIcon()
+    icon: getIcon()
   });
 
   splashWindow.loadFile(path.join(__dirname, "splash.html"));
@@ -174,32 +171,27 @@ function createSplash() {
    🪟 MAIN WINDOW
 ====================================================== */
 function createMainWindow() {
+  if (mainWindow) return;
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     show: false,
-    icon: getWindowIcon(),
+    icon: getIcon(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      sandbox: true,
+      sandbox: false,
       nodeIntegration: false
     }
   });
 
-  // SECURITY
-  mainWindow.webContents.on("will-navigate", (e) => e.preventDefault());
+  mainWindow.webContents.on("will-navigate", e => e.preventDefault());
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
   const startURL = isDev
-    ? "http://localhost:5173"
-    : `file://${path.join(
-        process.resourcesPath,
-        "app.asar",
-        "client",
-        "dist",
-        "index.html"
-      )}`;
+  ? "http://localhost:5173"
+  : `file://${path.join(__dirname, "..", "client", "dist", "index.html")}`;
 
   mainWindow.loadURL(startURL);
 
@@ -208,40 +200,41 @@ function createMainWindow() {
     mainWindow.show();
   });
 
-  if (isDev) {
-    mainWindow.webContents.openDevTools({ mode: "detach" });
-  }
+  if (isDev) mainWindow.webContents.openDevTools();
 }
 
 /* ======================================================
-   🚀 APP BOOT
+   🚀 APP BOOTSTRAP
 ====================================================== */
 app.whenReady().then(async () => {
   createSplash();
-  startBackend();
+
+  if (!isDev) {
+    startBackend();
+  }
 
   try {
     await waitForBackend(3333);
     console.log("✅ Backend ready");
+    createMainWindow();
   } catch (err) {
-    console.warn("⚠️ Backend not ready:", err.message);
+    console.error("❌ Backend failed:", err.message);
+    app.quit();
   }
 
-  createMainWindow();
+  if (!isDev) autoUpdater.checkForUpdates().catch(() => {
+  console.log("ℹ No updates available yet");
+});
 
-  if (!isDev) {
-    autoUpdater.checkForUpdatesAndNotify();
-  }
 });
 
 /* ======================================================
    🧹 CLEAN EXIT
 ====================================================== */
+app.on("before-quit", () => {
+  if (backendProcess) backendProcess.kill();
+});
+
 app.on("window-all-closed", () => {
-  if (backendProcess) {
-    backendProcess.kill();
-  }
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  if (process.platform !== "darwin") app.quit();
 });

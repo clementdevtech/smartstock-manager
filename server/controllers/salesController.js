@@ -1,131 +1,196 @@
 /**
  * server/controllers/salesController.js
- * Handles POS logic and sales tracking for SmartStock Manager Pro
+ * OFFLINE-FIRST POS logic for SmartStock Manager Pro
  */
 
-const asyncHandler = require('express-async-handler');
-const Sale = require('../models/Sale');
-const Item = require('../models/Item');
+const asyncHandler = require("express-async-handler");
+const db = require("../db/sqlite"); // ✅ local SQLite wrapper
 
-// @desc    Create a new sale (POS transaction)
-// @route   POST /api/sales
-// @access  Private
+/* =====================================================
+   @desc    Create a new sale (OFFLINE POS)
+   @route   POST /api/sales
+   @access  Private
+===================================================== */
 const createSale = asyncHandler(async (req, res) => {
-  const { items, paymentStatus, customerName } = req.body;
+  const { items, paymentType, customerName } = req.body;
 
-  if (!items || items.length === 0) {
+  if (!items || !Array.isArray(items) || items.length === 0) {
     res.status(400);
-    throw new Error('No sale items provided');
+    throw new Error("No sale items provided");
   }
 
-  // Calculate totals
-  const totalAmount = items.reduce((sum, i) => sum + i.total, 0);
-  const totalProfit = items.reduce((sum, i) => sum + i.profit, 0);
+  const adminId = req.user.adminId || req.user.id;
+  const storeId = req.user.storeId;
+  const cashierId = req.user.id;
 
-  // Create sale document
-  const sale = new Sale({
-    items,
-    totalAmount,
-    totalProfit,
-    paymentStatus: paymentStatus || 'paid',
-    customerName: customerName || 'Walk-in Customer',
-    createdBy: req.user.id,
+  let subtotal = 0;
+
+  // 🔐 Validate stock locally
+  for (const sold of items) {
+    const item = db.get(
+      `SELECT * FROM local_items WHERE id = ? AND storeId = ? AND adminId = ?`,
+      [sold.itemId, storeId, adminId]
+    );
+
+    if (!item) {
+      res.status(403);
+      throw new Error("Invalid item or unauthorized access");
+    }
+
+    if (item.quantity < sold.quantity) {
+      res.status(400);
+      throw new Error(`Insufficient stock for ${item.name}`);
+    }
+
+    subtotal += item.retailPrice * sold.quantity;
+  }
+
+  const tax = 0; // configurable later
+  const total = subtotal + tax;
+  const receiptNo = `R-${Date.now()}`;
+
+  // 🔄 TRANSACTION (ATOMIC OFFLINE SALE)
+  db.transaction(() => {
+    // 1️⃣ Save sale to offline queue
+    db.run(
+      `
+      INSERT INTO offline_sales (
+        receiptNo,
+        items,
+        subtotal,
+        tax,
+        total,
+        paymentType,
+        paymentStatus,
+        cashierId,
+        storeId,
+        adminId,
+        status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        receiptNo,
+        JSON.stringify(items),
+        subtotal,
+        tax,
+        total,
+        paymentType || "cash",
+        "paid",
+        cashierId,
+        storeId,
+        adminId,
+        "pending", // 🔥 waiting for sync
+      ]
+    );
+
+    // 2️⃣ Deduct inventory locally
+    for (const sold of items) {
+      db.run(
+        `
+        UPDATE local_items
+        SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP
+        WHERE id = ? AND storeId = ? AND adminId = ?
+      `,
+        [sold.quantity, sold.itemId, storeId, adminId]
+      );
+    }
   });
 
-  const savedSale = await sale.save();
-
-  // Deduct quantities from inventory
-  for (const sold of items) {
-    const item = await Item.findById(sold.item);
-    if (item) {
-      item.quantity -= sold.quantity;
-      if (item.quantity < 0) item.quantity = 0;
-      await item.save();
-    }
-  }
-
-  res.status(201).json(savedSale);
+  res.status(201).json({
+    message: "Sale completed (offline)",
+    receiptNo,
+    total,
+    customerName: customerName || "Walk-in Customer",
+  });
 });
 
-// @desc    Get all sales
-// @route   GET /api/sales
-// @access  Private
+/* =====================================================
+   @desc    Get all local sales (OFFLINE)
+===================================================== */
 const getSales = asyncHandler(async (req, res) => {
-  const sales = await Sale.find({ createdBy: req.user.id })
-    .populate('items.item', 'name category')
-    .sort({ createdAt: -1 });
+  const sales = db.all(
+    `
+    SELECT * FROM offline_sales
+    WHERE storeId = ? AND adminId = ?
+    ORDER BY createdAt DESC
+  `,
+    [req.user.storeId, req.user.adminId || req.user.id]
+  );
 
-  res.json(sales);
+  // parse items JSON
+  const formatted = sales.map(s => ({
+    ...s,
+    items: JSON.parse(s.items),
+  }));
+
+  res.json(formatted);
 });
 
-// @desc    Get single sale by ID
-// @route   GET /api/sales/:id
-// @access  Private
+/* =====================================================
+   @desc    Get single sale
+===================================================== */
 const getSaleById = asyncHandler(async (req, res) => {
-  const sale = await Sale.findById(req.params.id).populate('items.item');
+  const sale = db.get(
+    `
+    SELECT * FROM offline_sales
+    WHERE id = ? AND storeId = ?
+  `,
+    [req.params.id, req.user.storeId]
+  );
 
   if (!sale) {
     res.status(404);
-    throw new Error('Sale not found');
+    throw new Error("Sale not found");
   }
 
-  if (sale.createdBy.toString() !== req.user.id) {
-    res.status(401);
-    throw new Error('Not authorized to view this sale');
-  }
-
+  sale.items = JSON.parse(sale.items);
   res.json(sale);
 });
 
-// @desc    Delete sale
-// @route   DELETE /api/sales/:id
-// @access  Private
+/* =====================================================
+   @desc    Delete sale (OFFLINE SAFE)
+===================================================== */
 const deleteSale = asyncHandler(async (req, res) => {
-  const sale = await Sale.findById(req.params.id);
+  const sale = db.get(
+    `SELECT * FROM offline_sales WHERE id = ?`,
+    [req.params.id]
+  );
 
   if (!sale) {
     res.status(404);
-    throw new Error('Sale not found');
+    throw new Error("Sale not found");
   }
 
-  if (sale.createdBy.toString() !== req.user.id) {
+  if (sale.cashierId !== req.user.id) {
     res.status(401);
-    throw new Error('Not authorized to delete this sale');
+    throw new Error("Not authorized");
   }
 
-  await sale.deleteOne();
-  res.json({ message: 'Sale removed successfully' });
+  db.run(`DELETE FROM offline_sales WHERE id = ?`, [req.params.id]);
+  res.json({ message: "Sale deleted locally" });
 });
 
-// @desc    Get daily summary (for dashboard cards)
-// @route   GET /api/sales/summary/daily
-// @access  Private
+/* =====================================================
+   @desc    Daily summary (OFFLINE DASHBOARD)
+===================================================== */
 const getDailySummary = asyncHandler(async (req, res) => {
-  const startOfDay = new Date();
-  startOfDay.setHours(0, 0, 0, 0);
-
-  const endOfDay = new Date();
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const todaySales = await Sale.find({
-    createdBy: req.user.id,
-    createdAt: { $gte: startOfDay, $lte: endOfDay },
-  });
-
-  const totalSales = todaySales.reduce((sum, s) => sum + s.totalAmount, 0);
-  const totalProfit = todaySales.reduce((sum, s) => sum + s.totalProfit, 0);
-  const itemsSold = todaySales.reduce(
-    (sum, s) => sum + s.items.reduce((acc, i) => acc + i.quantity, 0),
-    0
+  const summary = db.get(
+    `
+    SELECT
+      COUNT(*) as transactions,
+      SUM(total) as totalSales
+    FROM offline_sales
+    WHERE DATE(createdAt) = DATE('now')
+      AND storeId = ?
+      AND adminId = ?
+  `,
+    [req.user.storeId, req.user.adminId || req.user.id]
   );
-  const transactions = todaySales.length;
 
   res.json({
-    totalSales,
-    totalProfit,
-    itemsSold,
-    transactions,
-    date: startOfDay,
+    totalSales: summary.totalSales || 0,
+    transactions: summary.transactions || 0,
+    date: new Date(),
   });
 });
 

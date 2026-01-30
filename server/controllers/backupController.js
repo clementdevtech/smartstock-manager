@@ -1,10 +1,40 @@
-const asyncHandler = require('express-async-handler');
-const fs = require('fs-extra');
-const path = require('path');
-const Item = require('../models/Item');
-const Sale = require('../models/Sale');
+const asyncHandler = require("express-async-handler");
+const fs = require("fs-extra");
+const path = require("path");
+const os = require("os");
+const Item = require("../models/Item");
+const Sale = require("../models/Sale");
 
+/* =====================================================
+   APP DATA DIR (SAME AS DB)
+===================================================== */
+function getAppDataDir() {
+  const appName = "SmartStockPOS";
 
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA, appName);
+  }
+
+  if (process.platform === "darwin") {
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      appName
+    );
+  }
+
+  return path.join(os.homedir(), ".config", appName);
+}
+
+const DATA_DIR = getAppDataDir();
+const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+const DB_PATH = path.join(DATA_DIR, "data.db");
+const BACKUP_DB_PATH = path.join(DATA_DIR, "backup.db");
+
+/* =====================================================
+   EXPORT BACKUP
+===================================================== */
 const exportBackup = asyncHandler(async (req, res) => {
   const userId = req.user.id;
 
@@ -18,86 +48,58 @@ const exportBackup = asyncHandler(async (req, res) => {
     sales,
   };
 
-  const backupFile = `backup-${userId}-${Date.now()}.json`;
-  const backupPath = path.join(__dirname, '..', 'uploads', backupFile);
+  await fs.ensureDir(UPLOADS_DIR);
 
-  await fs.ensureDir(path.join(__dirname, '..', 'uploads'));
-  await fs.writeJson(backupPath, backupData, { spaces: 2 });
+  const fileName = `backup-${userId}-${Date.now()}.json`;
+  const filePath = path.join(UPLOADS_DIR, fileName);
 
-  res.download(backupPath, backupFile, (err) => {
-    if (err) {
-      console.error('Backup download failed:', err);
-      res.status(500).json({ message: 'Backup failed' });
-    }
-    // Optional: delete file after sending
-    setTimeout(() => fs.remove(backupPath), 5000);
+  await fs.writeJson(filePath, backupData, { spaces: 2 });
+
+  res.download(filePath, fileName, async () => {
+    setTimeout(() => fs.remove(filePath), 5000);
   });
 });
 
-// @desc    Import data from uploaded JSON file
-// @route   POST /api/backup/import
-// @access  Private
+/* =====================================================
+   IMPORT BACKUP
+===================================================== */
 const importBackup = asyncHandler(async (req, res) => {
-  const userId = req.user.id;
-  const filePath = req.file.path;
-
   if (!req.file) {
     res.status(400);
-    throw new Error('No backup file uploaded');
+    throw new Error("No backup file uploaded");
   }
 
-  try {
-    const data = await fs.readJson(filePath);
+  const data = await fs.readJson(req.file.path);
+  const userId = req.user.id;
 
-    // Clear existing user data (optional)
-    await Item.deleteMany({ createdBy: userId });
-    await Sale.deleteMany({ createdBy: userId });
+  await Item.deleteMany({ createdBy: userId });
+  await Sale.deleteMany({ createdBy: userId });
 
-    // Reinsert items and sales
-    const newItems = data.items.map((i) => ({
-      ...i,
-      _id: undefined,
-      createdBy: userId,
-    }));
-    const newSales = data.sales.map((s) => ({
-      ...s,
-      _id: undefined,
-      createdBy: userId,
-    }));
+  await Item.insertMany(
+    data.items.map(i => ({ ...i, _id: undefined, createdBy: userId }))
+  );
 
-    await Item.insertMany(newItems);
-    await Sale.insertMany(newSales);
+  await Sale.insertMany(
+    data.sales.map(s => ({ ...s, _id: undefined, createdBy: userId }))
+  );
 
-    await fs.remove(filePath);
+  await fs.remove(req.file.path);
 
-    res.json({
-      message: 'Backup imported successfully',
-      importedItems: newItems.length,
-      importedSales: newSales.length,
-    });
-  } catch (error) {
-    console.error('Import error:', error);
-    res.status(500);
-    throw new Error('Failed to import backup');
-  }
+  res.json({ message: "Backup imported successfully" });
 });
 
+/* =====================================================
+   SQLITE FILE BACKUP
+===================================================== */
+const backupDatabase = asyncHandler(async (req, res) => {
+  await fs.copy(DB_PATH, BACKUP_DB_PATH);
+  res.json({ message: "Database backup completed" });
+});
 
-const backupDatabase = async (req, res) => {
-  const dbPath = path.join(__dirname, "../data.db");
-  const backupPath = path.join(__dirname, "../backup.db");
-
-  fs.copyFileSync(dbPath, backupPath);
-  res.json({ message: "Backup completed successfully" });
-};
-
-const restoreDatabase = async (req, res) => {
-  const dbPath = path.join(__dirname, "../data.db");
-  const backupPath = path.join(__dirname, "../backup.db");
-
-  fs.copyFileSync(backupPath, dbPath);
-  res.json({ message: "Restore completed successfully" });
-};
+const restoreDatabase = asyncHandler(async (req, res) => {
+  await fs.copy(BACKUP_DB_PATH, DB_PATH);
+  res.json({ message: "Database restored" });
+});
 
 module.exports = {
   exportBackup,
