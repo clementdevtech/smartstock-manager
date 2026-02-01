@@ -31,7 +31,7 @@
     "dev:client": "cd client && npm run dev",
     "dev:server": "cd server && npm run dev",
 
-    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "npm run rebuild && concurrently -k \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
 
     "build:client": "cd client && npm run build",
 

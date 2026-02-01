@@ -45,30 +45,33 @@ db.pragma("foreign_keys = ON");
 console.log("📦 SQLite initialized at:", DB_PATH);
 
 /* =====================================================
-   BASE TABLES
+   BASE TABLES (OFFLINE CACHE)
 ===================================================== */
 db.exec(`
 /* ================================
-   LOCAL USERS (OFFLINE CACHE)
+   LOCAL USERS
 ================================ */
 CREATE TABLE IF NOT EXISTS local_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  postgresId TEXT,              -- Supabase UUID
   email TEXT UNIQUE,
   phone TEXT,
   password TEXT,
   storeId TEXT,
   adminId TEXT,
   storeName TEXT,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  syncedAt TEXT
 );
 
 /* ================================
-   INVENTORY
+   INVENTORY (OFFLINE)
 ================================ */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-  mongoId TEXT,
+  postgresId TEXT,              -- Supabase UUID
   sku TEXT NOT NULL,
   name TEXT NOT NULL,
   category TEXT,
@@ -86,21 +89,25 @@ CREATE TABLE IF NOT EXISTS local_items (
   adminId TEXT NOT NULL,
   storeId TEXT NOT NULL,
 
+  syncStatus TEXT DEFAULT 'pending',
   lastSyncedAt TEXT,
   updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_local_items_sku ON local_items (sku);
-CREATE INDEX IF NOT EXISTS idx_local_items_store ON local_items (storeId);
+CREATE INDEX IF NOT EXISTS idx_local_items_sku
+  ON local_items (sku);
+
+CREATE INDEX IF NOT EXISTS idx_local_items_store
+  ON local_items (storeId);
 
 /* ================================
    OFFLINE SALES QUEUE
 ================================ */
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  mongoId TEXT,
+  postgresId TEXT,              -- Supabase UUID
   receiptNo TEXT UNIQUE,
-  items TEXT NOT NULL,
+  items TEXT NOT NULL,          -- JSON
   subtotal REAL,
   tax REAL,
   total REAL,
@@ -109,13 +116,13 @@ CREATE TABLE IF NOT EXISTS offline_sales (
   cashierId TEXT,
   storeId TEXT,
   adminId TEXT,
-  status TEXT DEFAULT 'pending',
+  syncStatus TEXT DEFAULT 'pending',
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_offline_sales_status
-  ON offline_sales (status);
+  ON offline_sales (syncStatus);
 
 /* ================================
    RECEIPTS
@@ -133,6 +140,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 ================================ */
 CREATE TABLE IF NOT EXISTS cashier_shifts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  postgresId TEXT,
   cashierId TEXT,
   storeId TEXT,
   openingCash REAL DEFAULT 0,
@@ -140,7 +148,8 @@ CREATE TABLE IF NOT EXISTS cashier_shifts (
   expectedCash REAL,
   openedAt TEXT DEFAULT CURRENT_TIMESTAMP,
   closedAt TEXT,
-  status TEXT DEFAULT 'open'
+  status TEXT DEFAULT 'open',
+  syncStatus TEXT DEFAULT 'pending'
 );
 
 /* ================================
@@ -148,6 +157,7 @@ CREATE TABLE IF NOT EXISTS cashier_shifts (
 ================================ */
 CREATE TABLE IF NOT EXISTS z_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  postgresId TEXT,
   storeId TEXT,
   cashierId TEXT,
   totalSales REAL,
@@ -155,11 +165,12 @@ CREATE TABLE IF NOT EXISTS z_reports (
   cardSales REAL,
   mobileSales REAL,
   transactionCount INTEGER,
-  generatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+  generatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  syncStatus TEXT DEFAULT 'pending'
 );
 
 /* ================================
-   META
+   SYNC META
 ================================ */
 CREATE TABLE IF NOT EXISTS sync_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,6 +180,9 @@ CREATE TABLE IF NOT EXISTS sync_log (
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+/* ================================
+   AUTH / META
+================================ */
 CREATE TABLE IF NOT EXISTS verification_codes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT,
@@ -206,8 +220,11 @@ function migrate(table, column, type = "TEXT") {
   }
 }
 
-// Example future-proof migrations
-migrate("local_users", "phone", "TEXT");
+// Future-proof examples
+migrate("local_users", "postgresId");
+migrate("local_users", "syncStatus");
+migrate("local_items", "postgresId");
+migrate("offline_sales", "postgresId");
 
 /* =====================================================
    DB WRAPPER

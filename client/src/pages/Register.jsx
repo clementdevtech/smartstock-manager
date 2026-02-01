@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useContext } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Eye, EyeOff, Check, X } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { AuthContext } from "../context/AuthContext";
+
 
 import {
   sendVerificationEmail,
@@ -45,6 +46,7 @@ const evaluateStrength = (pw) => {
 
 export default function Register() {
   const { loginUser } = useContext(AuthContext);
+  const navigate = useNavigate();
   const { register, handleSubmit, setValue, getValues } = useForm({
     mode: "onChange",
   });
@@ -212,7 +214,7 @@ const onProductKeyChange = async (e) => {
 
       setVerificationSuccess(true);
 
-      // Assign product key if present
+      /*// Assign product key if present
       if (productKeyStatus === "valid" && productKey) {
         try {
           await assignProductKeyToEmail({
@@ -223,7 +225,7 @@ const onProductKeyChange = async (e) => {
           // Non-fatal: continue registration flow even if assignment fails
           console.error("Assign key failed");
         }
-      }
+      }*/
 
       setStep(3);
     } catch {

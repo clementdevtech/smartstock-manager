@@ -1,5 +1,7 @@
 import UserManagement from "../components/admin/UserManagement";
 import LowStockPanel from "../components/admin/LowStockPanel";
+import SalesTargetPanel from "../components/admin/SalesTargetPanel";
+import TargetProgressPanel from "../components/admin/TargetProgressPanel";
 
 export default function Dashboard() {
   return (
@@ -8,6 +10,12 @@ export default function Dashboard() {
 
       {/* 🔴 Low Stock Alerts */}
       <LowStockPanel />
+
+      {/* 🎯 Sales Targets */}
+      <SalesTargetPanel />
+
+      {/* 📊 Target Progress */}
+      <TargetProgressPanel />
 
       {/* 👥 User Management */}
       <UserManagement />

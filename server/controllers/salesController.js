@@ -1,10 +1,5 @@
-/**
- * server/controllers/salesController.js
- * OFFLINE-FIRST POS logic for SmartStock Manager Pro
- */
-
 const asyncHandler = require("express-async-handler");
-const db = require("../db/sqlite"); // ✅ local SQLite wrapper
+const db = require("../sqlite");
 
 /* =====================================================
    @desc    Create a new sale (OFFLINE POS)
@@ -14,7 +9,7 @@ const db = require("../db/sqlite"); // ✅ local SQLite wrapper
 const createSale = asyncHandler(async (req, res) => {
   const { items, paymentType, customerName } = req.body;
 
-  if (!items || !Array.isArray(items) || items.length === 0) {
+  if (!Array.isArray(items) || items.length === 0) {
     res.status(400);
     throw new Error("No sale items provided");
   }
@@ -25,10 +20,21 @@ const createSale = asyncHandler(async (req, res) => {
 
   let subtotal = 0;
 
-  // 🔐 Validate stock locally
+  /* ===============================
+     🔐 VALIDATE STOCK (LOCAL)
+  ============================== */
   for (const sold of items) {
+    if (!sold.itemId || !sold.quantity || sold.quantity <= 0) {
+      res.status(400);
+      throw new Error("Invalid sale item data");
+    }
+
     const item = db.get(
-      `SELECT * FROM local_items WHERE id = ? AND storeId = ? AND adminId = ?`,
+      `
+      SELECT id, name, quantity, retailPrice
+      FROM local_items
+      WHERE id = ? AND storeId = ? AND adminId = ?
+      `,
       [sold.itemId, storeId, adminId]
     );
 
@@ -45,13 +51,15 @@ const createSale = asyncHandler(async (req, res) => {
     subtotal += item.retailPrice * sold.quantity;
   }
 
-  const tax = 0; // configurable later
+  const tax = 0;
   const total = subtotal + tax;
-  const receiptNo = `R-${Date.now()}`;
+  const receiptNo = `R-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
-  // 🔄 TRANSACTION (ATOMIC OFFLINE SALE)
+  /* ===============================
+     🔄 ATOMIC SQLITE TRANSACTION
+  ============================== */
   db.transaction(() => {
-    // 1️⃣ Save sale to offline queue
+    // 1️⃣ Insert offline sale
     db.run(
       `
       INSERT INTO offline_sales (
@@ -65,9 +73,9 @@ const createSale = asyncHandler(async (req, res) => {
         cashierId,
         storeId,
         adminId,
-        status
+        syncStatus
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `,
+      `,
       [
         receiptNo,
         JSON.stringify(items),
@@ -79,18 +87,20 @@ const createSale = asyncHandler(async (req, res) => {
         cashierId,
         storeId,
         adminId,
-        "pending", // 🔥 waiting for sync
+        "pending" // ⏳ waiting for Postgres sync
       ]
     );
 
-    // 2️⃣ Deduct inventory locally
+    // 2️⃣ Deduct inventory
     for (const sold of items) {
       db.run(
         `
         UPDATE local_items
-        SET quantity = quantity - ?, updatedAt = CURRENT_TIMESTAMP
+        SET quantity = quantity - ?,
+            updatedAt = CURRENT_TIMESTAMP,
+            syncStatus = 'pending'
         WHERE id = ? AND storeId = ? AND adminId = ?
-      `,
+        `,
         [sold.quantity, sold.itemId, storeId, adminId]
       );
     }
@@ -108,19 +118,21 @@ const createSale = asyncHandler(async (req, res) => {
    @desc    Get all local sales (OFFLINE)
 ===================================================== */
 const getSales = asyncHandler(async (req, res) => {
+  const adminId = req.user.adminId || req.user.id;
+
   const sales = db.all(
     `
-    SELECT * FROM offline_sales
+    SELECT *
+    FROM offline_sales
     WHERE storeId = ? AND adminId = ?
     ORDER BY createdAt DESC
-  `,
-    [req.user.storeId, req.user.adminId || req.user.id]
+    `,
+    [req.user.storeId, adminId]
   );
 
-  // parse items JSON
-  const formatted = sales.map(s => ({
-    ...s,
-    items: JSON.parse(s.items),
+  const formatted = sales.map(sale => ({
+    ...sale,
+    items: safeParseJSON(sale.items),
   }));
 
   res.json(formatted);
@@ -130,12 +142,15 @@ const getSales = asyncHandler(async (req, res) => {
    @desc    Get single sale
 ===================================================== */
 const getSaleById = asyncHandler(async (req, res) => {
+  const adminId = req.user.adminId || req.user.id;
+
   const sale = db.get(
     `
-    SELECT * FROM offline_sales
-    WHERE id = ? AND storeId = ?
-  `,
-    [req.params.id, req.user.storeId]
+    SELECT *
+    FROM offline_sales
+    WHERE id = ? AND storeId = ? AND adminId = ?
+    `,
+    [req.params.id, req.user.storeId, adminId]
   );
 
   if (!sale) {
@@ -143,7 +158,7 @@ const getSaleById = asyncHandler(async (req, res) => {
     throw new Error("Sale not found");
   }
 
-  sale.items = JSON.parse(sale.items);
+  sale.items = safeParseJSON(sale.items);
   res.json(sale);
 });
 
@@ -151,9 +166,15 @@ const getSaleById = asyncHandler(async (req, res) => {
    @desc    Delete sale (OFFLINE SAFE)
 ===================================================== */
 const deleteSale = asyncHandler(async (req, res) => {
+  const adminId = req.user.adminId || req.user.id;
+
   const sale = db.get(
-    `SELECT * FROM offline_sales WHERE id = ?`,
-    [req.params.id]
+    `
+    SELECT *
+    FROM offline_sales
+    WHERE id = ? AND storeId = ? AND adminId = ?
+    `,
+    [req.params.id, req.user.storeId, adminId]
   );
 
   if (!sale) {
@@ -162,11 +183,12 @@ const deleteSale = asyncHandler(async (req, res) => {
   }
 
   if (sale.cashierId !== req.user.id) {
-    res.status(401);
-    throw new Error("Not authorized");
+    res.status(403);
+    throw new Error("Not authorized to delete this sale");
   }
 
   db.run(`DELETE FROM offline_sales WHERE id = ?`, [req.params.id]);
+
   res.json({ message: "Sale deleted locally" });
 });
 
@@ -174,25 +196,38 @@ const deleteSale = asyncHandler(async (req, res) => {
    @desc    Daily summary (OFFLINE DASHBOARD)
 ===================================================== */
 const getDailySummary = asyncHandler(async (req, res) => {
+  const adminId = req.user.adminId || req.user.id;
+
   const summary = db.get(
     `
     SELECT
-      COUNT(*) as transactions,
-      SUM(total) as totalSales
+      COUNT(*) AS transactions,
+      COALESCE(SUM(total), 0) AS totalSales
     FROM offline_sales
     WHERE DATE(createdAt) = DATE('now')
       AND storeId = ?
       AND adminId = ?
-  `,
-    [req.user.storeId, req.user.adminId || req.user.id]
+    `,
+    [req.user.storeId, adminId]
   );
 
   res.json({
-    totalSales: summary.totalSales || 0,
-    transactions: summary.transactions || 0,
-    date: new Date(),
+    date: new Date().toISOString(),
+    totalSales: summary.totalSales,
+    transactions: summary.transactions,
   });
 });
+
+/* =====================================================
+   🧠 UTIL
+===================================================== */
+function safeParseJSON(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
 
 module.exports = {
   createSale,

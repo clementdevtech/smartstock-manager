@@ -3,32 +3,32 @@
   "version": "1.0.0",
   "description": "Backend API for SmartStock Manager Pro - Node.js + Express + SQLite/MongoDB",
   "main": "server.js",
-
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-
   "author": "Clement DevTech",
   "license": "MIT",
-
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.4.6",
     "cloudinary": "^1.41.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "express-async-handler": "^1.2.0",
     "fs-extra": "^11.2.0",
+    "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.0",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
     "multer-storage-cloudinary": "^4.0.0",
-    "nodemailer": "^7.0.11"
+    "nodemailer": "^7.0.11",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.18.0"
   },
-
   "devDependencies": {
     "nodemon": "^3.1.0"
   }

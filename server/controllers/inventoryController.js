@@ -1,208 +1,231 @@
 const asyncHandler = require("express-async-handler");
-const mongoose = require("mongoose");
-const Item = require("../models/Item");
-const Sale = require("../models/Sale");
+const { query } = require("../config/db");
+const sqlite = require("../sqlite");
 const sendEmail = require("../utils/email");
-const sqlite = require("../db/sqlite");
 
 /* =====================================================
    HELPERS
 ===================================================== */
-const isOnline = () => mongoose.connection.readyState === 1;
-
 const getTenant = (req) => ({
-  storeId: req.user.storeId,
   adminId: req.user.adminId || req.user.id,
+  storeId: req.user.storeId,
 });
 
+const isOnline = async () => {
+  try {
+    await query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /* =====================================================
-   INTERNAL: LOW STOCK EMAIL
+   LOW STOCK EMAIL
 ===================================================== */
-const sendLowStockEmail = async (item, userEmail) => {
-  if (!userEmail) return;
+const sendLowStockEmail = async (item, email) => {
+  if (!email) return;
+
+  if (item.quantity > item.low_stock_threshold) return;
 
   const html = `
     <h2>⚠️ Low Stock Alert</h2>
     <ul>
       <li><strong>Name:</strong> ${item.name}</li>
       <li><strong>SKU:</strong> ${item.sku}</li>
-      <li><strong>Quantity Left:</strong> ${item.quantity}</li>
-      <li><strong>Threshold:</strong> ${item.lowStockThreshold}</li>
+      <li><strong>Quantity:</strong> ${item.quantity}</li>
+      <li><strong>Threshold:</strong> ${item.low_stock_threshold}</li>
     </ul>
-    <small>SmartStock Manager</small>
+    <small>SmartStock POS</small>
   `;
 
-  await sendEmail(userEmail, `Low Stock: ${item.name}`, html);
+  await sendEmail(email, `Low Stock: ${item.name}`, html);
 };
 
 /* =====================================================
-   GET ITEMS (SQLite → Mongo fallback)
+   GET ITEMS (OFFLINE FIRST)
 ===================================================== */
 const getItems = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
+  const { adminId, storeId } = getTenant(req);
 
-  // 📴 OFFLINE → SQLITE
   const localItems = sqlite.all(
-    `SELECT * FROM local_items
-     WHERE storeId = ? AND adminId = ?
-     ORDER BY updatedAt DESC`,
-    [storeId, adminId]
+    `
+    SELECT * FROM local_items
+    WHERE adminId = ? AND storeId = ?
+    ORDER BY updatedAt DESC
+    `,
+    [adminId, storeId]
   );
 
-  if (!isOnline()) {
+  if (!(await isOnline())) {
     return res.json(localItems);
   }
 
-  // ☁️ ONLINE → MongoDB sync refresh
-  const remoteItems = await Item.find({
-    store: storeId,
-    admin: adminId,
-  }).sort({ updatedAt: -1 });
+  const { rows } = await query(
+    `
+    SELECT *
+    FROM items
+    WHERE admin_id = $1 AND store_id = $2
+    ORDER BY updated_at DESC
+    `,
+    [adminId, storeId]
+  );
 
-  res.json(remoteItems);
+  res.json(rows);
 });
 
 /* =====================================================
-   GET ITEM BY ID (SQLite-first)
+   GET ITEM BY ID
 ===================================================== */
 const getItemById = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
+  const { adminId, storeId } = getTenant(req);
 
   const local = sqlite.get(
-    `SELECT * FROM local_items
-     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
-    [req.params.id, storeId, adminId]
+    `
+    SELECT * FROM local_items
+    WHERE postgresId = ? AND adminId = ? AND storeId = ?
+    `,
+    [req.params.id, adminId, storeId]
   );
 
   if (local) return res.json(local);
 
-  if (!isOnline()) {
+  if (!(await isOnline())) {
     res.status(404);
     throw new Error("Item not found offline");
   }
 
-  const remote = await Item.findOne({
-    _id: req.params.id,
-    store: storeId,
-    admin: adminId,
-  });
+  const { rows } = await query(
+    `
+    SELECT *
+    FROM items
+    WHERE id = $1 AND admin_id = $2 AND store_id = $3
+    `,
+    [req.params.id, adminId, storeId]
+  );
 
-  if (!remote) {
+  if (!rows.length) {
     res.status(404);
     throw new Error("Item not found");
   }
 
-  res.json(remote);
+  res.json(rows[0]);
 });
 
 /* =====================================================
-   GET ITEM BY BARCODE (POS CORE)
+   GET ITEM BY BARCODE (SKU)
 ===================================================== */
 const getItemByBarcode = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
+  const { adminId, storeId } = getTenant(req);
 
   const local = sqlite.get(
-    `SELECT * FROM local_items
-     WHERE sku = ? AND storeId = ? AND adminId = ?`,
-    [req.params.sku, storeId, adminId]
+    `
+    SELECT * FROM local_items
+    WHERE sku = ? AND adminId = ? AND storeId = ?
+    `,
+    [req.params.sku, adminId, storeId]
   );
 
   if (local) return res.json(local);
 
-  if (!isOnline()) {
+  if (!(await isOnline())) {
     res.status(404);
     throw new Error("Item not found offline");
   }
 
-  const remote = await Item.findOne({
-    sku: req.params.sku,
-    store: storeId,
-    admin: adminId,
-  });
+  const { rows } = await query(
+    `
+    SELECT *
+    FROM items
+    WHERE sku = $1 AND admin_id = $2 AND store_id = $3
+    `,
+    [req.params.sku, adminId, storeId]
+  );
 
-  if (!remote) {
+  if (!rows.length) {
     res.status(404);
     throw new Error("Item not found");
   }
 
-  res.json(remote);
+  res.json(rows[0]);
 });
 
 /* =====================================================
    CREATE ITEM (OFFLINE FIRST)
 ===================================================== */
 const createItem = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
-  const {
-    name,
-    sku,
-    category,
-    unit,
-    wholesalePrice,
-    retailPrice,
-    quantity,
-    entryDate,
-    expiryDate,
-    batchNumber,
-    supplier,
-    imageUrl,
-    lowStockThreshold,
-  } = req.body;
+  const { adminId, storeId } = getTenant(req);
+  const data = req.body;
 
-  // 🗄️ Write to SQLite FIRST
+  // 1️⃣ SQLite first
   sqlite.run(
-    `INSERT INTO local_items
-     (sku, name, category, unit, wholesalePrice, retailPrice,
-      quantity, lowStockThreshold, batchNumber, expiryDate,
-      adminId, storeId, lastSyncedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+    `
+    INSERT INTO local_items (
+      sku, name, category, unit,
+      wholesalePrice, retailPrice,
+      quantity, lowStockThreshold,
+      batchNumber, expiryDate,
+      adminId, storeId, syncStatus
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+    `,
     [
-      sku,
-      name,
-      category,
-      unit,
-      wholesalePrice,
-      retailPrice,
-      quantity,
-      lowStockThreshold,
-      batchNumber,
-      expiryDate,
+      data.sku,
+      data.name,
+      data.category,
+      data.unit,
+      data.wholesale_price,
+      data.retail_price,
+      data.quantity,
+      data.low_stock_threshold,
+      data.batch_number,
+      data.expiry_date,
       adminId,
       storeId,
     ]
   );
 
-  sqlite.run(
-    `INSERT INTO sync_log (entity, action)
-     VALUES ('item', 'create')`
-  );
-
-  // ☁️ Sync immediately if online
-  if (isOnline()) {
-    const mongoItem = await Item.create({
-      name,
-      sku,
-      category,
-      unit,
-      wholesalePrice,
-      retailPrice,
-      quantity,
-      entryDate,
-      expiryDate,
-      batchNumber,
-      supplier,
-      imageUrl,
-      lowStockThreshold,
-      admin: adminId,
-      store: storeId,
-      createdBy: req.user.id,
-    });
+  // 2️⃣ Online → Postgres
+  if (await isOnline()) {
+    const { rows } = await query(
+      `
+      INSERT INTO items (
+        name, sku, category, unit,
+        wholesale_price, retail_price,
+        quantity, low_stock_threshold,
+        batch_number, expiry_date,
+        supplier, image_url,
+        admin_id, store_id, created_by
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+      )
+      RETURNING *
+      `,
+      [
+        data.name,
+        data.sku,
+        data.category,
+        data.unit,
+        data.wholesale_price,
+        data.retail_price,
+        data.quantity,
+        data.low_stock_threshold,
+        data.batch_number,
+        data.expiry_date,
+        data.supplier || {},
+        data.image_url || "",
+        adminId,
+        storeId,
+        req.user.id,
+      ]
+    );
 
     sqlite.run(
-      `UPDATE local_items
-       SET mongoId = ?, lastSyncedAt = CURRENT_TIMESTAMP
-       WHERE sku = ? AND storeId = ? AND adminId = ?`,
-      [mongoItem._id.toString(), sku, storeId, adminId]
+      `
+      UPDATE local_items
+      SET postgresId = ?, syncStatus = 'synced'
+      WHERE sku = ? AND adminId = ? AND storeId = ?
+      `,
+      [rows[0].id, data.sku, adminId, storeId]
     );
   }
 
@@ -210,28 +233,28 @@ const createItem = asyncHandler(async (req, res) => {
 });
 
 /* =====================================================
-   UPDATE ITEM (POS SAFE)
+   UPDATE ITEM
 ===================================================== */
 const updateItem = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
+  const { adminId, storeId } = getTenant(req);
 
   sqlite.run(
-    `UPDATE local_items
-     SET quantity = ?, updatedAt = CURRENT_TIMESTAMP
-     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
-    [req.body.quantity, req.params.id, storeId, adminId]
+    `
+    UPDATE local_items
+    SET quantity = ?, updatedAt = CURRENT_TIMESTAMP, syncStatus = 'pending'
+    WHERE postgresId = ? AND adminId = ? AND storeId = ?
+    `,
+    [req.body.quantity, req.params.id, adminId, storeId]
   );
 
-  sqlite.run(
-    `INSERT INTO sync_log (entity, action)
-     VALUES ('item', 'update')`
-  );
-
-  if (isOnline()) {
-    await Item.findOneAndUpdate(
-      { _id: req.params.id, store: storeId, admin: adminId },
-      { ...req.body, createdBy: req.user.id },
-      { runValidators: true }
+  if (await isOnline()) {
+    await query(
+      `
+      UPDATE items
+      SET quantity = $1, updated_at = now()
+      WHERE id = $2 AND admin_id = $3 AND store_id = $4
+      `,
+      [req.body.quantity, req.params.id, adminId, storeId]
     );
   }
 
@@ -242,62 +265,57 @@ const updateItem = asyncHandler(async (req, res) => {
    DELETE ITEM
 ===================================================== */
 const deleteItem = asyncHandler(async (req, res) => {
-  const { storeId, adminId } = getTenant(req);
+  const { adminId, storeId } = getTenant(req);
 
   sqlite.run(
-    `DELETE FROM local_items
-     WHERE mongoId = ? AND storeId = ? AND adminId = ?`,
-    [req.params.id, storeId, adminId]
+    `
+    DELETE FROM local_items
+    WHERE postgresId = ? AND adminId = ? AND storeId = ?
+    `,
+    [req.params.id, adminId, storeId]
   );
 
-  sqlite.run(
-    `INSERT INTO sync_log (entity, action)
-     VALUES ('item', 'delete')`
-  );
-
-  if (isOnline()) {
-    await Item.deleteOne({
-      _id: req.params.id,
-      store: storeId,
-      admin: adminId,
-    });
+  if (await isOnline()) {
+    await query(
+      `
+      DELETE FROM items
+      WHERE id = $1 AND admin_id = $2 AND store_id = $3
+      `,
+      [req.params.id, adminId, storeId]
+    );
   }
 
   res.json({ message: "Item deleted (offline-first)" });
 });
 
 /* =====================================================
-   WEEKLY BEST ITEMS (ONLINE ONLY)
+   WEEKLY BEST ITEMS (POSTGRES)
 ===================================================== */
 const getWeeklyBestItems = asyncHandler(async (req, res) => {
-  if (!isOnline()) {
-    return res.json([]);
-  }
+  if (!(await isOnline())) return res.json([]);
 
-  const start = new Date();
-  start.setDate(start.getDate() - 7);
+  const { adminId, storeId } = getTenant(req);
 
-  const report = await Sale.aggregate([
-    {
-      $match: {
-        createdAt: { $gte: start },
-        store: req.user.storeId,
-        admin: req.user.adminId || req.user.id,
-      },
-    },
-    { $unwind: "$items" },
-    {
-      $group: {
-        _id: "$items.item",
-        totalSold: { $sum: "$items.quantity" },
-        revenue: { $sum: "$items.total" },
-      },
-    },
-    { $sort: { totalSold: -1 } },
-    { $limit: 10 },
-  ]);
+  const { rows } = await query(
+    `
+    SELECT
+      i.name,
+      i.sku,
+      SUM((s_item->>'quantity')::int) AS total_sold
+    FROM sales s
+    CROSS JOIN LATERAL jsonb_array_elements(s.items) AS s_item
+    JOIN items i ON i.id::text = s_item->>'itemId'
+    WHERE s.created_at >= now() - interval '7 days'
+      AND s.admin_id = $1
+      AND s.store_id = $2
+    GROUP BY i.id
+    ORDER BY total_sold DESC
+    LIMIT 10
+    `,
+    [adminId, storeId]
+  );
 
-  res.json(report);
+  res.json(rows);
 });
 
 module.exports = {

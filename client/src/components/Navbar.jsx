@@ -28,8 +28,6 @@ const Navbar = () => {
 
   // Menu items
   const baseLinks = [
-    { name: "Inventory", path: "/inventory" },
-    { name: "Sales", path: "/sales" },
     { name: "Point of Sale", path: "/pos" },
   ];
 
@@ -37,6 +35,9 @@ const Navbar = () => {
     { name: "Reports", path: "/reports" },
     { name: "Backup", path: "/backup" },
     { name: "Settings", path: "/settings" },
+    { name: "dashboard", path: "/dashboard" },
+    { name: "Inventory", path: "/inventory" },
+    { name: "Sales", path: "/sales" },
   ];
 
   const navLinks = user?.role === "admin"

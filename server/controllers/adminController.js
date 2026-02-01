@@ -1,48 +1,113 @@
 const bcrypt = require("bcryptjs");
+const asyncHandler = require("express-async-handler");
 const db = require("../sqlite");
 
-// CREATE USER (SQLITE)
-exports.createUser = async (req, res) => {
+/* =====================================================
+   CREATE LOCAL USER (OFFLINE FIRST)
+===================================================== */
+const createUser = asyncHandler(async (req, res) => {
   const { email, password, storeName, phone, country } = req.body;
 
-  const exists = await db.get(
-    "SELECT * FROM local_users WHERE email = ?",
-    [email]
+  if (!email || !password || !storeName) {
+    res.status(400);
+    throw new Error("Email, password and store name are required");
+  }
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const exists = db.get(
+    `SELECT id FROM local_users WHERE email = ?`,
+    [normalizedEmail]
   );
 
   if (exists) {
-    return res.status(400).json({ message: "User already exists" });
+    res.status(400);
+    throw new Error("User already exists");
   }
 
-  const hashed = await bcrypt.hash(password, 12);
+  const hashedPassword = await bcrypt.hash(password, 12);
 
-  await db.run(
-    `INSERT INTO local_users (email, password, storeName, phone, country)
-     VALUES (?, ?, ?, ?, ?)`,
-    [email, hashed, storeName, phone, country]
+  db.run(
+    `
+    INSERT INTO local_users (
+      email,
+      password,
+      storeName,
+      phone,
+      country,
+      syncStatus,
+      createdAt
+    ) VALUES (?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+    `,
+    [normalizedEmail, hashedPassword, storeName, phone || null, country || null]
   );
 
-  res.json({ success: true });
-};
+  res.status(201).json({ success: true });
+});
 
-// GET USERS
-exports.getUsers = async (req, res) => {
-  const users = await db.all(
-    "SELECT email, storeName, phone, country FROM local_users"
+/* =====================================================
+   GET LOCAL USERS
+===================================================== */
+const getUsers = asyncHandler(async (req, res) => {
+  const users = db.all(
+    `
+    SELECT
+      id,
+      email,
+      storeName,
+      phone,
+      country,
+      syncStatus,
+      createdAt
+    FROM local_users
+    ORDER BY createdAt DESC
+    `
   );
+
   res.json(users);
-};
+});
 
-// RESET PASSWORD
-exports.resetPassword = async (req, res) => {
+/* =====================================================
+   RESET PASSWORD (OFFLINE SAFE)
+===================================================== */
+const resetPassword = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
-  const hashed = await bcrypt.hash(password, 12);
+  if (!email || !password) {
+    res.status(400);
+    throw new Error("Email and new password are required");
+  }
 
-  await db.run(
-    "UPDATE local_users SET password = ? WHERE email = ?",
-    [hashed, email]
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const user = db.get(
+    `SELECT id FROM local_users WHERE email = ?`,
+    [normalizedEmail]
+  );
+
+  if (!user) {
+    res.status(404);
+    throw new Error("User not found");
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 12);
+
+  db.run(
+    `
+    UPDATE local_users
+    SET password = ?,
+        syncStatus = 'pending',
+        updatedAt = CURRENT_TIMESTAMP
+    WHERE email = ?
+    `,
+    [hashedPassword, normalizedEmail]
   );
 
   res.json({ success: true });
+});
+
+module.exports = {
+  createUser,
+  getUsers,
+  resetPassword,
 };

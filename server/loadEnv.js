@@ -28,8 +28,8 @@ module.exports = function loadEnv() {
   process.env.JWT_SECRET ||= "smartstock-dev-secret";
   process.env.NODE_ENV ||= "production";
 
-  if (!process.env.MONGO_URI) {
-    console.error("❌ MONGO_URI missing");
+  if (!process.env.DATABASE_URL) {
+    console.error("❌ DATABASE_URL missing");
     process.exit(1);
   }
 

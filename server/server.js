@@ -1,20 +1,28 @@
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 require("./loadEnv")();
+
 /* =====================================================
    IMPORTS
 ===================================================== */
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
-const os = require("os");
 
-const connectDB = require("./config/db");
+const { connectDB, dbStatus } = require("./config/db");
 const syncOfflineSales = require("./sync/syncSales");
 
 /* =====================================================
-   🗂️ APP DATA DIR (WRITABLE)
+   🧠 ENV / MODE DETECTION (MUST BE EARLY)
+===================================================== */
+const isElectron =
+  !!process.versions.electron ||
+  process.argv.some(a => a.toLowerCase().includes("electron"));
+
+/* =====================================================
+   🗂️ APP DATA DIR (WRITABLE & SAFE)
 ===================================================== */
 const APP_DATA =
   process.env.APP_DATA ||
@@ -27,19 +35,21 @@ if (!fs.existsSync(APP_DATA)) {
 process.env.APP_DATA = APP_DATA;
 
 /* =====================================================
-   APP INIT
+   🚀 APP INIT
 ===================================================== */
 const app = express();
 
 /* =====================================================
    MIDDLEWARE
 ===================================================== */
-app.use(cors({
-  origin: process.env.CLIENT_ORIGIN || "*",
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: process.env.CLIENT_ORIGIN || "*",
+    credentials: true,
+  })
+);
 
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use(
@@ -47,33 +57,54 @@ app.use(
 );
 
 /* =====================================================
-   ROUTES
+   ROUTES (FULL SYSTEM)
 ===================================================== */
+
+/* 🔐 AUTH & USERS */
+app.use("/api/auth", require("./routes/authRoutes"));
+app.use("/api/users", require("./routes/userRoutes"));
+
+/* 🏪 CORE POS */
 app.use("/api/items", require("./routes/inventoryRoutes"));
 app.use("/api/sales", require("./routes/salesRoutes"));
-app.use("/api/users", require("./routes/userRoutes"));
-app.use("/api/auth", require("./routes/authRoutes"));
-app.use("/api/backup", require("./routes/backupRoutes"));
-app.use("/api/admin", require("./routes/adminRoutes"));
+
+/* 👥 EMPLOYEES & PAYROLL */
+app.use("/api/employees", require("./routes/employeeRoutes"));
+app.use("/api/expenses", require("./routes/expenseRoutes"));
+
+/* 📊 REPORTING & ANALYTICS */
+app.use("/api/reports", require("./routes/reportRoutes"));
+app.use("/api/forecast", require("./routes/forecastRoutes"));
+app.use("/api/targets", require("./routes/targetRoutes"));
+
+/* 📂 CSV / EXPORTS */
+app.use("/api/csv", require("./routes/csvRoutes"));
+
+/* ⚙️ SETTINGS & ADMIN */
 app.use("/api/settings", require("./routes/settingsRoutes"));
-app.use("/api/upload", require("./routes/upload"));
+app.use("/api/keys", require("./routes/keyRoutes"));
+
+/* 💾 BACKUPS (OPTIONAL ELECTRON) */
+app.use("/api/backup", require("./routes/backupRoutes"));
 
 /* =====================================================
-   HEALTH CHECK
+   ❤️ HEALTH CHECK (CRITICAL)
 ===================================================== */
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
+    mode: isElectron ? "Electron" : "Web",
+    postgres: dbStatus(),
     uptime: process.uptime(),
     appData: APP_DATA,
-    time: new Date().toISOString()
+    time: new Date().toISOString(),
   });
 });
 
 /* =====================================================
-   OPTIONAL WEB MODE (STATIC CLIENT)
+   🌍 STATIC CLIENT (WEB MODE ONLY)
 ===================================================== */
-if (process.env.NODE_ENV === "production") {
+if (process.env.NODE_ENV === "production" && !isElectron) {
   const clientBuildPath = path.join(__dirname, "..", "client", "dist");
 
   if (fs.existsSync(clientBuildPath)) {
@@ -85,57 +116,63 @@ if (process.env.NODE_ENV === "production") {
 }
 
 /* =====================================================
-   ERROR HANDLER
+   ❌ GLOBAL ERROR HANDLER (NO CRASH EVER)
 ===================================================== */
 app.use((err, req, res, next) => {
   console.error("❌ Unhandled error:", err.stack || err);
-  res.status(500).json({ success: false, message: err.message });
+  res.status(err.statusCode || 500).json({
+    success: false,
+    message: err.message || "Internal Server Error",
+  });
 });
 
 /* =====================================================
-   🚀 START SERVER (UNIVERSAL)
+   🚀 START SERVER (OFFLINE-FIRST)
 ===================================================== */
-const isElectron =
-  !!process.versions.electron ||
-  process.argv.some(a => a.includes("electron"));
-
 const PORT = Number(process.env.PORT) || 3333;
 const HOST = isElectron ? "127.0.0.1" : "0.0.0.0";
 
 let server;
+let syncInterval;
 
-async function start() {
-  try {
-    console.log("🧠 Mode:", isElectron ? "Electron" : "Web");
-    console.log("🌐 Binding to:", HOST, PORT);
+function start() {
+  console.log("🧠 Mode:", isElectron ? "Electron" : "Web");
+  console.log("🌐 Binding to:", HOST, PORT);
 
-    await connectDB();
+  // 🔥 Non-blocking DB connect
+  connectDB();
 
-    server = app.listen(PORT, HOST, () => {
-      console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
-    });
-  } catch (err) {
-    console.error("❌ Backend startup failed:", err);
-    process.exit(1);
-  }
+  server = app.listen(PORT, HOST, () => {
+    console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
+  });
+
+  // 🔁 Offline sync loop (safe)
+  syncOfflineSales().catch(() => {});
+  syncInterval = setInterval(() => {
+    syncOfflineSales().catch(() => {});
+  }, 60_000);
 }
 
 start();
 
-
 /* =====================================================
-   GRACEFUL SHUTDOWN
+   🛑 GRACEFUL SHUTDOWN
 ===================================================== */
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
 function shutdown() {
   console.log("🛑 Shutting down backend...");
+
+  if (syncInterval) clearInterval(syncInterval);
+
   if (server) {
     server.close(() => {
       console.log("✅ Backend stopped cleanly");
       process.exit(0);
     });
+  } else {
+    process.exit(0);
   }
 }
 
