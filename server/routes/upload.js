@@ -1,70 +1,81 @@
 const express = require("express");
 const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("../config/cloudinary");
+const db = require("../sqlite");
+const { query } = require("../config/db");
 
 const router = express.Router();
 
-/* =====================================================
-   CLOUDINARY SAFE LOAD
-   (prevents prod crash if env missing)
-===================================================== */
-let cloudinary;
-let storage;
-
-try {
-  cloudinary = require("../config/cloudinary");
-
-  storage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder: "smartstock/logos",
-      allowed_formats: ["png", "jpg", "jpeg", "webp"],
-      transformation: [{ width: 600, height: 600, crop: "limit" }],
-    },
-  });
-} catch (err) {
-  console.warn("⚠️ Cloudinary not configured. Uploads disabled.");
-}
-
-/* =====================================================
-   MULTER SETUP
-===================================================== */
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  },
-  fileFilter(req, file, cb) {
-    if (!file.mimetype.startsWith("image/")) {
-      return cb(new Error("Only image files are allowed"));
-    }
-    cb(null, true);
+/* ================= ONLINE STORAGE ================= */
+const cloudStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "smartstock/logos",
+    allowed_formats: ["png", "jpg", "jpeg", "webp"],
+    transformation: [{ width: 600, height: 600, crop: "limit" }],
   },
 });
 
-/* =====================================================
-   ROUTE
-===================================================== */
-router.post("/logo", (req, res, next) => {
-  if (!storage) {
-    return res.status(503).json({
-      message: "Image upload service not available",
-    });
+const uploadOnline = multer({ storage: cloudStorage });
+
+/* ================= OFFLINE STORAGE ================= */
+const diskStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    const dir = path.join(__dirname, "../uploads/logos");
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename(req, file, cb) {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}${ext}`);
+  },
+});
+
+const uploadOffline = multer({ storage: diskStorage });
+
+/* ================= ROUTE ================= */
+router.post("/logo", async (req, res) => {
+  let online = true;
+  try {
+    await query("SELECT 1");
+  } catch {
+    online = false;
   }
 
-  upload.single("file")(req, res, (err) => {
-    if (err) {
-      console.error("❌ Upload error:", err.message);
+  const uploader = online ? uploadOnline : uploadOffline;
+
+  uploader.single("file")(req, res, async (err) => {
+    if (err)
       return res.status(400).json({ message: err.message });
+
+    if (!req.file)
+      return res.status(400).json({ message: "No file uploaded" });
+
+    // ONLINE
+    if (online) {
+      return res.json({
+        mode: "online",
+        url: req.file.path,
+        public_id: req.file.filename,
+      });
     }
 
-    if (!req.file) {
-      return res.status(400).json({ message: "No file received" });
-    }
+    // OFFLINE
+    db.run(
+      `
+      INSERT INTO offline_logos (store_name, local_path)
+      VALUES (?,?)
+      `,
+      [req.body.storeName, req.file.path]
+    );
 
     res.json({
-      url: req.file.path,       // Cloudinary secure_url
-      public_id: req.file.filename,
+      mode: "offline",
+      message: "Saved locally. Will sync later.",
     });
   });
 });

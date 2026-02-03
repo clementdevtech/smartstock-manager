@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS local_users (
   storeId TEXT,
   adminId TEXT,
   storeName TEXT,
+  country TEXT,
+  logoUrl TEXT,
   syncStatus TEXT DEFAULT 'pending',
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
@@ -70,25 +72,20 @@ CREATE TABLE IF NOT EXISTS local_users (
 ================================ */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-  postgresId TEXT,              -- Supabase UUID
+  postgresId TEXT,
   sku TEXT NOT NULL,
   name TEXT NOT NULL,
   category TEXT,
   unit TEXT DEFAULT 'pcs',
-
   wholesalePrice REAL,
   retailPrice REAL,
   quantity INTEGER DEFAULT 0,
   lowStockThreshold INTEGER DEFAULT 5,
-
   supplier TEXT,
   batchNumber TEXT,
   expiryDate TEXT,
-
   adminId TEXT NOT NULL,
   storeId TEXT NOT NULL,
-
   syncStatus TEXT DEFAULT 'pending',
   lastSyncedAt TEXT,
   updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
@@ -101,13 +98,13 @@ CREATE INDEX IF NOT EXISTS idx_local_items_store
   ON local_items (storeId);
 
 /* ================================
-   OFFLINE SALES QUEUE
+   OFFLINE SALES
 ================================ */
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  postgresId TEXT,              -- Supabase UUID
+  postgresId TEXT,
   receiptNo TEXT UNIQUE,
-  items TEXT NOT NULL,          -- JSON
+  items TEXT NOT NULL,
   subtotal REAL,
   tax REAL,
   total REAL,
@@ -120,9 +117,6 @@ CREATE TABLE IF NOT EXISTS offline_sales (
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
 );
-
-CREATE INDEX IF NOT EXISTS idx_offline_sales_status
-  ON offline_sales (syncStatus);
 
 /* ================================
    RECEIPTS
@@ -153,7 +147,7 @@ CREATE TABLE IF NOT EXISTS cashier_shifts (
 );
 
 /* ================================
-   Z-REPORTS
+   Z REPORTS
 ================================ */
 CREATE TABLE IF NOT EXISTS z_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,17 +161,6 @@ CREATE TABLE IF NOT EXISTS z_reports (
   transactionCount INTEGER,
   generatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncStatus TEXT DEFAULT 'pending'
-);
-
-/* ================================
-   SYNC META
-================================ */
-CREATE TABLE IF NOT EXISTS sync_log (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity TEXT,
-  entityId INTEGER,
-  action TEXT,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 /* ================================
@@ -203,6 +186,20 @@ CREATE TABLE IF NOT EXISTS invite_codes (
   createdBy TEXT,
   used INTEGER DEFAULT 0
 );
+
+/* ================================
+   OFFLINE LOGOS
+================================ */
+CREATE TABLE IF NOT EXISTS offline_logos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  store_name TEXT NOT NULL,
+  local_path TEXT NOT NULL,
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  syncedAt DATETIME,
+  cloudinary_url TEXT,
+  cloudinary_public_id TEXT
+);
 `);
 
 /* =====================================================
@@ -220,9 +217,21 @@ function migrate(table, column, type = "TEXT") {
   }
 }
 
-// Future-proof examples
+/* ================================
+   BACKWARD-COMPATIBLE MIGRATIONS
+================================ */
+
+// User profile
+migrate("local_users", "country");
+migrate("local_users", "logoUrl");
 migrate("local_users", "postgresId");
 migrate("local_users", "syncStatus");
+
+// 🔐 Password reset support (FIXES YOUR ERROR)
+migrate("local_users", "reset_password_token");
+migrate("local_users", "reset_password_expire");
+
+// Sync helpers
 migrate("local_items", "postgresId");
 migrate("offline_sales", "postgresId");
 

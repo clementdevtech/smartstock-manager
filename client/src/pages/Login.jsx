@@ -142,9 +142,7 @@ export default function Login() {
                   <span className="text-muted-foreground">Remember me</span>
                 </label>
 
-                <a href="/forgot-password" className="text-emerald-600 text-sm">
-                  Forgot password?
-                </a>
+                <Link to="/forgot-password" className="text-emerald-600 text-sm" >Forgot password?</Link>
               </div>
 
             </CardContent>
@@ -161,7 +159,7 @@ export default function Login() {
 
               <p className="text-sm text-center text-muted-foreground">
                 Don’t have an account?{" "}
-                <Link to="/register">Create account</Link>
+                <Link to="/register" className="text-emerald-600 text-sm">Create account</Link>
               </p>
             </CardFooter>
           </form>

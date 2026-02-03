@@ -13,6 +13,7 @@ const morgan = require("morgan");
 
 const { connectDB, dbStatus } = require("./config/db");
 const syncOfflineSales = require("./sync/syncSales");
+const syncOfflineLogos = require("./sync/syncOfflineLogos");
 
 /* =====================================================
    🧠 ENV / MODE DETECTION (MUST BE EARLY)
@@ -63,6 +64,7 @@ app.use(
 /* 🔐 AUTH & USERS */
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/users", require("./routes/userRoutes"));
+app.use("/api/upload", require("./routes/upload"));
 
 /* 🏪 CORE POS */
 app.use("/api/items", require("./routes/inventoryRoutes"));
@@ -147,6 +149,10 @@ function start() {
   });
 
   // 🔁 Offline sync loop (safe)
+
+  setInterval(() => {
+  syncOfflineLogos();
+}, 30000);
   syncOfflineSales().catch(() => {});
   syncInterval = setInterval(() => {
     syncOfflineSales().catch(() => {});

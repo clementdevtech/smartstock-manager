@@ -4,6 +4,8 @@ import { motion } from "framer-motion";
 import { Eye, EyeOff, Check, X } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { AuthContext } from "../context/AuthContext";
+import { Navigate } from "react-router-dom";
+
 
 
 import {
@@ -402,7 +404,7 @@ const onProductKeyChange = async (e) => {
         </button>
       </div>
 
-    <Link to="/login" className="text-emerald-600 hover:underline">
+    <Link to="/login" className="text-emerald-600 text-sm">
       Already have an account? Login
       </Link>
     </div>

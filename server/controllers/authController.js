@@ -85,6 +85,7 @@ exports.verifyEmailCode = async (req, res) => {
   try {
     const { email, code } = req.body;
 
+    // 1️⃣ Check verification code
     const result = await query(
       `
       SELECT * FROM verification_codes
@@ -93,31 +94,61 @@ exports.verifyEmailCode = async (req, res) => {
       [email, code]
     );
 
-    if (!result.rowCount)
+    if (!result.rowCount) {
       return res.status(400).json({ message: "Invalid code" });
+    }
 
     const record = result.rows[0];
-    if (new Date(record.expires_at) < new Date())
+    if (new Date(record.expires_at) < new Date()) {
       return res.status(400).json({ message: "Code expired" });
+    }
 
+    // 2️⃣ Generate reset token
     const resetToken = crypto.randomBytes(32).toString("hex");
-    const hashed = crypto.createHash("sha256").update(resetToken).digest("hex");
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(resetToken)
+      .digest("hex");
 
-    await query(
+    // 3️⃣ Try Postgres first
+    const pgUpdate = await query(
       `
       UPDATE users
       SET reset_password_token = $1,
           reset_password_expire = now() + interval '15 minutes'
       WHERE email = $2
+      RETURNING id
       `,
-      [hashed, email]
+      [hashedToken, email]
     );
 
-    await query(`DELETE FROM verification_codes WHERE email = $1`, [email]);
+    // 4️⃣ Fallback to SQLite (offline users)
+    if (!pgUpdate.rowCount) {
+      db.run(
+        `
+        UPDATE local_users
+        SET reset_password_token = ?,
+            reset_password_expire = datetime('now', '+15 minutes')
+        WHERE email = ?
+        `,
+        [hashedToken, email]
+      );
+    }
 
-    res.json({ verified: true, token: resetToken });
+    // 5️⃣ Cleanup verification code
+    await query(
+      `DELETE FROM verification_codes WHERE email = $1`,
+      [email]
+    );
+
+    // 6️⃣ Return raw token to client
+    res.json({
+      verified: true,
+      token: resetToken
+    });
+
   } catch (err) {
-    console.error(err);
+    console.error("❌ Verify email code error:", err);
     res.status(500).json({ message: "Verification failed" });
   }
 };
@@ -215,22 +246,56 @@ exports.register = async (req, res) => {
       inviteCode
     } = req.body;
 
+    if (!email || !password || !storeName) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
     const hashed = await bcrypt.hash(password, 12);
 
+    /* =====================================================
+       🔎 CHECK IF FIRST ADMIN
+    ===================================================== */
     const adminCount = await query(`SELECT COUNT(*) FROM users`);
     const isFirstAdmin = Number(adminCount.rows[0].count) === 0;
 
-    // ================= FIRST ADMIN → POSTGRES =================
+    /* =====================================================
+       🥇 FIRST ADMIN → POSTGRES + PRODUCT KEY
+    ===================================================== */
     if (isFirstAdmin) {
-      if (inviteCode) {
-        const invite = await query(
-          `SELECT 1 FROM invite_codes WHERE code = $1 AND used = false`,
-          [inviteCode]
-        );
-        if (!invite.rowCount)
-          return res.status(400).json({ message: "Invalid invite code" });
+      /* ---------- Product key is REQUIRED ---------- */
+      if (!productKey) {
+        return res.status(400).json({ message: "Product key required" });
       }
 
+      /* ---------- Validate product key ---------- */
+      const keyResult = await query(
+        `
+        SELECT id FROM product_keys
+        WHERE key = $1 AND used = false
+        `,
+        [productKey]
+      );
+
+      if (!keyResult.rowCount) {
+        return res.status(400).json({ message: "Invalid or used product key" });
+      }
+
+      /* ---------- Optional invite code ---------- */
+      if (inviteCode) {
+        const invite = await query(
+          `
+          SELECT 1 FROM invite_codes
+          WHERE code = $1 AND used = false
+          `,
+          [inviteCode]
+        );
+
+        if (!invite.rowCount) {
+          return res.status(400).json({ message: "Invalid invite code" });
+        }
+      }
+
+      /* ---------- Create admin user ---------- */
       const result = await query(
         `
         INSERT INTO users (name, email, phone, password, role)
@@ -240,6 +305,20 @@ exports.register = async (req, res) => {
         [storeName, email, phone, hashed]
       );
 
+      const adminUser = result.rows[0];
+
+      /* ---------- Mark product key as used ---------- */
+      await query(
+        `
+        UPDATE product_keys
+        SET used = true,
+            assigned_email = $1
+        WHERE key = $2
+        `,
+        [email, productKey]
+      );
+
+      /* ---------- Mark invite code as used ---------- */
       if (inviteCode) {
         await query(
           `UPDATE invite_codes SET used = true WHERE code = $1`,
@@ -247,33 +326,48 @@ exports.register = async (req, res) => {
         );
       }
 
+      /* ---------- Create store ---------- */
+      const storeResult = await query(
+        `
+        INSERT INTO stores (name, admin_id)
+        VALUES ($1, $2)
+        RETURNING id
+        `,
+        [storeName, adminUser.id]
+      );
+
+      const storeId = storeResult.rows[0].id;
+
+      /* ---------- Create business settings ---------- */
+      await query(
+        `
+        INSERT INTO business_settings (store_id, admin_id)
+        VALUES ($1, $2)
+        `,
+        [storeId, adminUser.id]
+      );
+
       return res.json({
-        user: result.rows[0],
+        user: adminUser,
         role: "admin",
-        token: generateToken(result.rows[0])
+        token: generateToken(adminUser)
       });
     }
 
+    /* =====================================================
+       👤 NORMAL USER → SQLITE ONLY
+       ❌ NO PRODUCT KEY
+    ===================================================== */
 
-      // AFTER admin user is created
-  const storeResult = await pool.query(
-  `INSERT INTO stores (name, admin_id)
-   VALUES ($1, $2)
-   RETURNING id`,
-  [storeName, adminUser.id]
-);
+    const existingLocal = db.get(
+      `SELECT 1 FROM local_users WHERE email = ?`,
+      [email]
+    );
 
-const storeId = storeResult.rows[0].id;
+    if (existingLocal) {
+      return res.status(400).json({ message: "User already exists" });
+    }
 
-// Create business settings
-await pool.query(
-  `INSERT INTO business_settings (store_id, admin_id)
-   VALUES ($1, $2)`,
-  [storeId, adminUser.id]
-);
-
-
-    // ================= NORMAL USER → SQLITE =================
     db.run(
       `
       INSERT INTO local_users
@@ -283,15 +377,22 @@ await pool.query(
       [email, hashed, storeName, phone, country, logoUrl]
     );
 
-    res.json({
-      user: { email, storeName, role: "user" },
+    return res.json({
+      user: {
+        email,
+        storeName,
+        role: "user"
+      },
       role: "user"
     });
+
   } catch (err) {
-    console.error(err);
+    console.error("❌ Registration failed:", err);
     res.status(500).json({ message: "Registration failed" });
   }
 };
+
+
 
 /* =====================================================
    8️⃣ LOGIN
@@ -300,6 +401,9 @@ exports.loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    /* =====================================================
+       1️⃣ TRY POSTGRES (ONLINE USERS)
+    ===================================================== */
     const pg = await query(
       `SELECT * FROM users WHERE email = $1`,
       [email]
@@ -307,8 +411,11 @@ exports.loginUser = async (req, res) => {
 
     if (pg.rowCount) {
       const user = pg.rows[0];
-      if (!await bcrypt.compare(password, user.password))
+
+      const match = await bcrypt.compare(password, user.password);
+      if (!match) {
         return res.status(400).json({ message: "Invalid credentials" });
+      }
 
       return res.json({
         user,
@@ -317,22 +424,40 @@ exports.loginUser = async (req, res) => {
       });
     }
 
+    /* =====================================================
+       2️⃣ FALLBACK TO SQLITE (OFFLINE USERS)
+    ===================================================== */
     const local = db.get(
       `SELECT * FROM local_users WHERE email = ?`,
       [email]
     );
 
-    if (!local || !await bcrypt.compare(password, local.password))
+    if (!local) {
       return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    const match = await bcrypt.compare(password, local.password);
+    if (!match) {
+      return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    // Normalize local user for frontend
+    const user = {
+      id: local.id,
+      email: local.email,
+      role: "user",
+      storeName: local.storeName,
+      storeId: local.storeId
+    };
 
     return res.json({
       user,
-      role: user.role,
+      role: "user",
       token: generateToken(user)
     });
 
   } catch (err) {
-    console.error(err);
+    console.error("❌ Login error:", err);
     res.status(500).json({ message: "Login failed" });
   }
 };
@@ -403,9 +528,20 @@ exports.resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
-    const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
-    const hashed = await bcrypt.hash(newPassword, 12);
+    console.log("🔁 Resetting password with token:", req.body);
 
+    if (!token || !newPassword) {
+      return res.status(400).json({ message: "Token and password required" });
+    }
+
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(token)
+      .digest("hex");
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+    // 1️⃣ Try Postgres
     const pg = await query(
       `
       UPDATE users
@@ -416,13 +552,35 @@ exports.resetPassword = async (req, res) => {
         AND reset_password_expire > now()
       RETURNING id
       `,
-      [hashed, hashedToken]
+      [hashedPassword, hashedToken]
     );
 
-    if (pg.rowCount) return res.json({ message: "Password updated" });
+    if (pg.rowCount) {
+      return res.json({ message: "Password updated" });
+    }
 
+    // 2️⃣ Fallback to SQLite
+    const local = db.run(
+      `
+      UPDATE local_users
+      SET password = ?,
+          reset_password_token = NULL,
+          reset_password_expire = NULL
+      WHERE reset_password_token = ?
+        AND reset_password_expire > datetime('now')
+      `,
+      [hashedPassword, hashedToken]
+    );
+
+    if (local.changes) {
+      return res.json({ message: "Password updated" });
+    }
+
+    // 3️⃣ Nothing matched
     res.status(400).json({ message: "Invalid or expired token" });
-  } catch {
+
+  } catch (err) {
+    console.error("❌ Password reset error:", err);
     res.status(500).json({ message: "Password reset failed" });
   }
 };
