@@ -14,6 +14,7 @@ const morgan = require("morgan");
 const { connectDB, dbStatus } = require("./config/db");
 const syncOfflineSales = require("./sync/syncSales");
 const syncOfflineLogos = require("./sync/syncOfflineLogos");
+const { syncPendingItems } = require("./sync/syncPendingItems");
 
 /* =====================================================
    🧠 ENV / MODE DETECTION (MUST BE EARLY)
@@ -152,6 +153,7 @@ function start() {
 
   setInterval(() => {
   syncOfflineLogos();
+  syncPendingItems();
 }, 30000);
   syncOfflineSales().catch(() => {});
   syncInterval = setInterval(() => {

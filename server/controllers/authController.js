@@ -243,8 +243,10 @@ exports.register = async (req, res) => {
       country,
       logoUrl,
       productKey,
-      inviteCode
+      inviteCode,
+      Admin
     } = req.body;
+
 
     if (!email || !password || !storeName) {
       return res.status(400).json({ message: "Missing required fields" });
@@ -253,80 +255,51 @@ exports.register = async (req, res) => {
     const hashed = await bcrypt.hash(password, 12);
 
     /* =====================================================
-       🔎 CHECK IF FIRST ADMIN
-    ===================================================== */
-    const adminCount = await query(`SELECT COUNT(*) FROM users`);
-    const isFirstAdmin = Number(adminCount.rows[0].count) === 0;
+       🔎 CHECK IF FIRST ADMIN (POSTGRES ONLY)
 
     /* =====================================================
-       🥇 FIRST ADMIN → POSTGRES + PRODUCT KEY
+       🥇 FIRST ADMIN → POSTGRES ONLY
     ===================================================== */
-    if (isFirstAdmin) {
-      /* ---------- Product key is REQUIRED ---------- */
+    if (Admin == "true") {
       if (!productKey) {
         return res.status(400).json({ message: "Product key required" });
       }
 
-      /* ---------- Validate product key ---------- */
-      const keyResult = await query(
-        `
-        SELECT id FROM product_keys
-        WHERE key = $1 AND used = false
-        `,
-        [productKey]
-      );
 
-      if (!keyResult.rowCount) {
-        return res.status(400).json({ message: "Invalid or used product key" });
-      }
-
-      /* ---------- Optional invite code ---------- */
+      // Validate invite code if provided
       if (inviteCode) {
         const invite = await query(
-          `
-          SELECT 1 FROM invite_codes
-          WHERE code = $1 AND used = false
-          `,
+          `SELECT 1 FROM invite_codes WHERE code = $1 AND used = false`,
           [inviteCode]
         );
-
         if (!invite.rowCount) {
           return res.status(400).json({ message: "Invalid invite code" });
         }
       }
 
-      /* ---------- Create admin user ---------- */
+      // Insert admin user with logo
       const result = await query(
         `
-        INSERT INTO users (name, email, phone, password, role)
-        VALUES ($1,$2,$3,$4,'admin')
+        INSERT INTO users (name, email, phone, password, role, logo_url)
+        VALUES ($1, $2, $3, $4, 'admin', $5)
         RETURNING *
         `,
-        [storeName, email, phone, hashed]
+        [storeName, email, phone, hashed, logoUrl || null]
       );
-
       const adminUser = result.rows[0];
 
-      /* ---------- Mark product key as used ---------- */
+      // Mark product key as used and save email
       await query(
-        `
-        UPDATE product_keys
-        SET used = true,
-            assigned_email = $1
-        WHERE key = $2
-        `,
+        `UPDATE product_keys SET used = true, assigned_email = $1 WHERE key = $2`,
         [email, productKey]
       );
-
-      /* ---------- Mark invite code as used ---------- */
+      
+      // Mark invite code as used
       if (inviteCode) {
-        await query(
-          `UPDATE invite_codes SET used = true WHERE code = $1`,
-          [inviteCode]
-        );
+        await query(`UPDATE invite_codes SET used = true WHERE code = $1`, [inviteCode]);
       }
 
-      /* ---------- Create store ---------- */
+      // Create store
       const storeResult = await query(
         `
         INSERT INTO stores (name, admin_id)
@@ -335,16 +308,15 @@ exports.register = async (req, res) => {
         `,
         [storeName, adminUser.id]
       );
-
       const storeId = storeResult.rows[0].id;
 
-      /* ---------- Create business settings ---------- */
+      // Insert default business settings
       await query(
         `
-        INSERT INTO business_settings (store_id, admin_id)
-        VALUES ($1, $2)
+        INSERT INTO business_settings (store_id, admin_id, currency, tax_rate)
+        VALUES ($1, $2, $3, $4)
         `,
-        [storeId, adminUser.id]
+        [storeId, adminUser.id, 'USD', 0.15] // default: USD and 15% tax
       );
 
       return res.json({
@@ -355,33 +327,24 @@ exports.register = async (req, res) => {
     }
 
     /* =====================================================
-       👤 NORMAL USER → SQLITE ONLY
+       👤 NORMAL USER
        ❌ NO PRODUCT KEY
+       ❌ NO POSTGRES INSERT
+       ❌ LOCAL SQLITE ONLY
     ===================================================== */
-
-    const existingLocal = db.get(
-      `SELECT 1 FROM local_users WHERE email = ?`,
-      [email]
-    );
-
-    if (existingLocal) {
-      return res.status(400).json({ message: "User already exists" });
+    if (productKey) {
+      return res.status(400).json({
+        message: "Product key is not allowed for normal users"
+      });
     }
-
-    db.run(
-      `
-      INSERT INTO local_users
-      (email, password, storeName, phone, country, logoUrl)
-      VALUES (?,?,?,?,?,?)
-      `,
-      [email, hashed, storeName, phone, country, logoUrl]
-    );
 
     return res.json({
       user: {
         email,
         storeName,
-        role: "user"
+        role: "user",
+        country,
+        logoUrl: logoUrl || null
       },
       role: "user"
     });
@@ -402,7 +365,7 @@ exports.loginUser = async (req, res) => {
     const { email, password } = req.body;
 
     /* =====================================================
-       1️⃣ TRY POSTGRES (ONLINE USERS)
+       1️⃣ POSTGRES FIRST (ADMINS ONLY)
     ===================================================== */
     const pg = await query(
       `SELECT * FROM users WHERE email = $1`,
@@ -417,6 +380,7 @@ exports.loginUser = async (req, res) => {
         return res.status(400).json({ message: "Invalid credentials" });
       }
 
+      // 🚫 Admins NEVER allowed to exist locally
       return res.json({
         user,
         role: user.role,
@@ -425,7 +389,8 @@ exports.loginUser = async (req, res) => {
     }
 
     /* =====================================================
-       2️⃣ FALLBACK TO SQLITE (OFFLINE USERS)
+       2️⃣ SQLITE FALLBACK (LOCAL USERS ONLY)
+       🚫 ADMINS BLOCKED HERE
     ===================================================== */
     const local = db.get(
       `SELECT * FROM local_users WHERE email = ?`,
@@ -436,12 +401,18 @@ exports.loginUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
+    // 🔒 HARD BLOCK: local user can NEVER be admin
+    if (local.role && local.role !== "user") {
+      return res.status(403).json({
+        message: "Invalid user type"
+      });
+    }
+
     const match = await bcrypt.compare(password, local.password);
     if (!match) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // Normalize local user for frontend
     const user = {
       id: local.id,
       email: local.email,
@@ -461,6 +432,7 @@ exports.loginUser = async (req, res) => {
     res.status(500).json({ message: "Login failed" });
   }
 };
+
 
 /* =====================================================
    9️⃣ REQUEST PASSWORD RESET

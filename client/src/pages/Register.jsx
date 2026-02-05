@@ -257,6 +257,7 @@ const onProductKeyChange = async (e) => {
         country: payload.country,
         inviteCode: payload.inviteCode || undefined,
         logoUrl,
+        Admin: "true",
       };
 
       const res = await registerApi(finalPayload);
