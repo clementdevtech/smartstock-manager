@@ -2,8 +2,6 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
-
-const path = require("path");
 const { createRequire } = require("module");
 
 const requireFunc = createRequire(__filename);
@@ -204,6 +202,7 @@ migrate("local_users", "reset_password_expire");
 migrate("local_items", "postgresId");
 migrate("local_items", "syncStatus");
 migrate("offline_sales", "postgresId");
+migrate("local_users", "role", "TEXT DEFAULT 'user'");
 
 /* =====================================================
    INDEXES (SAFE)
