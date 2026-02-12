@@ -1,8 +1,8 @@
+require("./loadEnv")();
+
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-
-require("./loadEnv")();
 
 /* =====================================================
    IMPORTS
@@ -17,11 +17,11 @@ const syncOfflineLogos = require("./sync/syncOfflineLogos");
 const { syncPendingItems } = require("./sync/syncPendingItems");
 
 /* =====================================================
-   🧠 ENV / MODE DETECTION (MUST BE EARLY)
+   🧠 ENV / MODE DETECTION (pkg + Electron safe)
 ===================================================== */
 const isElectron =
   !!process.versions.electron ||
-  process.argv.some(a => a.toLowerCase().includes("electron"));
+  process.argv.some(arg => arg.toLowerCase().includes("electron"));
 
 /* =====================================================
    🗂️ APP DATA DIR (WRITABLE & SAFE)
@@ -47,7 +47,7 @@ const app = express();
 app.use(
   cors({
     origin: process.env.CLIENT_ORIGIN || "*",
-    credentials: true,
+    credentials: true
   })
 );
 
@@ -87,20 +87,20 @@ app.use("/api/csv", require("./routes/csvRoutes"));
 app.use("/api/settings", require("./routes/settingsRoutes"));
 app.use("/api/keys", require("./routes/keyRoutes"));
 
-/* 💾 BACKUPS (OPTIONAL ELECTRON) */
+/* 💾 BACKUPS */
 app.use("/api/backup", require("./routes/backupRoutes"));
 
 /* =====================================================
    ❤️ HEALTH CHECK (CRITICAL)
 ===================================================== */
-app.get("/api/health", (req, res) => {
+app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     mode: isElectron ? "Electron" : "Web",
     postgres: dbStatus(),
     uptime: process.uptime(),
     appData: APP_DATA,
-    time: new Date().toISOString(),
+    time: new Date().toISOString()
   });
 });
 
@@ -121,22 +121,23 @@ if (process.env.NODE_ENV === "production" && !isElectron) {
 /* =====================================================
    ❌ GLOBAL ERROR HANDLER (NO CRASH EVER)
 ===================================================== */
-app.use((err, req, res, next) => {
+app.use((err, _req, res, _next) => {
   console.error("❌ Unhandled error:", err.stack || err);
   res.status(err.statusCode || 500).json({
     success: false,
-    message: err.message || "Internal Server Error",
+    message: err.message || "Internal Server Error"
   });
 });
 
 /* =====================================================
-   🚀 START SERVER (OFFLINE-FIRST)
+   🚀 START SERVER
 ===================================================== */
 const PORT = Number(process.env.PORT) || 3333;
 const HOST = isElectron ? "127.0.0.1" : "0.0.0.0";
 
 let server;
 let syncInterval;
+let auxSyncInterval;
 
 function start() {
   console.log("🧠 Mode:", isElectron ? "Electron" : "Web");
@@ -149,12 +150,12 @@ function start() {
     console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
   });
 
-  // 🔁 Offline sync loop (safe)
+  // 🔁 Safe background sync
+  auxSyncInterval = setInterval(() => {
+    syncOfflineLogos();
+    syncPendingItems();
+  }, 30_000);
 
-  setInterval(() => {
-  syncOfflineLogos();
-  syncPendingItems();
-}, 30000);
   syncOfflineSales().catch(() => {});
   syncInterval = setInterval(() => {
     syncOfflineSales().catch(() => {});
@@ -173,6 +174,7 @@ function shutdown() {
   console.log("🛑 Shutting down backend...");
 
   if (syncInterval) clearInterval(syncInterval);
+  if (auxSyncInterval) clearInterval(auxSyncInterval);
 
   if (server) {
     server.close(() => {

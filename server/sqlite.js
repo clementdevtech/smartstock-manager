@@ -1,7 +1,25 @@
-const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+
+
+const path = require("path");
+const { createRequire } = require("module");
+
+const requireFunc = createRequire(__filename);
+
+let Database;
+
+if (process.pkg) {
+  // running inside packaged exe
+  const basePath = path.dirname(process.execPath);
+  Database = requireFunc(
+    path.join(basePath, "node_modules/better-sqlite3")
+  );
+} else {
+  // normal dev mode
+  Database = requireFunc("better-sqlite3");
+}
 
 /* =====================================================
    WRITEABLE APP DATA DIRECTORY (ELECTRON + PROD SAFE)

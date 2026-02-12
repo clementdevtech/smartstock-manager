@@ -34,14 +34,15 @@
     "dev": "npm run rebuild && concurrently -k \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
 
     "build:client": "cd client && npm run build",
+    "build:backend": "pkg server/server.js --targets node20-win-x64 --output server-dist/backend.exe",
 
     "rebuild": "electron-rebuild -f -w better-sqlite3 --module-dir server",
 
     "build": "npm run build:client && electron-builder",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3 --module-dir server",
-    "build:win": "npm run rebuild:native && npm run build:client && electron-builder --win",
-    "build:linux": "npm run build:client && electron-builder --linux",
-    "build:mac": "npm run build:client && electron-builder --mac",
+    "build:win": "npm run rebuild:native && npm run build:client && electron-builder --win --publish always",
+    "build:linux": "npm run build:client && electron-builder --linux --publish always",
+    "build:mac": "npm run build:client && electron-builder --mac --publish always",
 
     "clear-cache": "node electron/clear-cache.js"
   },
@@ -49,12 +50,6 @@
   "build": {
     "appId": "com.smartstock.pos",
     "productName": "SmartStock POS",
-
-    "asar": true,
-    "asarUnpack": [
-      "server/**",
-      "**/*.node"
-    ],
 
     "npmRebuild": false,
     "buildDependenciesFromSource": true,
@@ -73,9 +68,9 @@
 
     "extraResources": [
       {
-        "from": "server",
-        "to": "server"
-      }
+          "from": "server-dist/backend.exe",
+          "to": "backend.exe"
+        }
     ],
 
     "publish": [

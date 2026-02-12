@@ -1,37 +1,16 @@
-const path = require("path");
 const fs = require("fs");
+const path = require("path");
 const dotenv = require("dotenv");
 
 module.exports = function loadEnv() {
-  const isElectron =
-    !!process.versions.electron ||
-    process.argv.some(a => a.includes("electron"));
+  // Allows Electron to inject .env path
+  const envPath = process.env.ENV_PATH;
 
-  let envPath = path.join(process.cwd(), ".env");
-
-  if (isElectron && process.resourcesPath) {
-    const electronEnv = path.join(
-      process.resourcesPath,
-      "app.asar.unpacked",
-      "server",
-      ".env"
-    );
-
-    if (fs.existsSync(electronEnv)) {
-      envPath = electronEnv;
-    }
+  if (envPath && fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    console.log("🔐 Loaded env from:", envPath);
+  } else {
+    dotenv.config();
+    console.log("🔐 Loaded env from default location");
   }
-
-  dotenv.config({ path: envPath });
-
-  // 🔐 SAFE FALLBACKS (CRITICAL)
-  process.env.JWT_SECRET ||= "smartstock-dev-secret";
-  process.env.NODE_ENV ||= "production";
-
-  if (!process.env.DATABASE_URL) {
-    console.error("❌ DATABASE_URL missing");
-    process.exit(1);
-  }
-
-  console.log("📄 ENV loaded from:", envPath);
 };

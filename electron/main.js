@@ -34,12 +34,31 @@ if (!isDev) {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on("error", err => {
-    console.error("❌ AutoUpdater error:", err);
+  // 🔐 Required for PRIVATE GitHub repo
+  if (process.env.GH_TOKEN) {
+    autoUpdater.requestHeaders = {
+      Authorization: `token ${process.env.GH_TOKEN}`
+    };
+  }
+
+  autoUpdater.on("checking-for-update", () => {
+    console.log("🔎 Checking for updates...");
+  });
+
+  autoUpdater.on("update-available", () => {
+    console.log("⬇ Update available. Downloading...");
+  });
+
+  autoUpdater.on("update-not-available", () => {
+    console.log("✅ No updates available.");
   });
 
   autoUpdater.on("update-downloaded", () => {
-    console.log("✅ Update downloaded — will install on quit");
+    console.log("✅ Update downloaded — will install on quit.");
+  });
+
+  autoUpdater.on("error", err => {
+    console.error("❌ AutoUpdater error:", err);
   });
 }
 
@@ -61,52 +80,31 @@ function getServerPath() {
 
 /* ======================================================
    🔁 START BACKEND
-   Uses Electron internal Node runtime
 ====================================================== */
+function getBackendExePath() {
+  if (isDev) {
+    return path.join(__dirname, "..", "server", "server.js");
+  }
+
+  return path.join(process.resourcesPath, "backend.exe");
+}
+
 function startBackend() {
   if (backendProcess || isDev) return;
 
-  const serverPath = getServerPath();
-  const nodePath = process.execPath; // 🔥 CRITICAL FIX
+  const backendPath = getBackendExePath();
 
-  console.log("🚀 Starting backend:", serverPath);
-  console.log("🟢 Using Electron Node:", nodePath);
-
-  backendProcess = spawn(nodePath, [serverPath], {
-    cwd: path.dirname(serverPath),
+  backendProcess = spawn(backendPath, [], {
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: "1",
       NODE_ENV: "production",
       PORT: "3333"
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: "pipe",
     windowsHide: true
   });
-
-  backendProcess.stdout.on("data", d =>
-    console.log("[BACKEND]", d.toString().trim())
-  );
-
-  backendProcess.stderr.on("data", d =>
-    console.error("[BACKEND ERROR]", d.toString().trim())
-  );
-
-  backendProcess.on("exit", code => {
-    console.error("❌ Backend exited with code:", code);
-    backendProcess = null;
-
-    backendCrashCount++;
-
-    if (backendCrashCount > 5) {
-      console.error("🛑 Backend crash loop detected — stopping restart attempts.");
-      return;
-    }
-
-    clearTimeout(backendRestartTimer);
-    backendRestartTimer = setTimeout(startBackend, 4000);
-  });
 }
+
 
 /* ======================================================
    ⏳ WAIT FOR BACKEND
@@ -190,8 +188,8 @@ function createMainWindow() {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
 
   const startURL = isDev
-  ? "http://localhost:5173"
-  : `file://${path.join(__dirname, "..", "client", "dist", "index.html")}`;
+    ? "http://localhost:5173"
+    : `file://${path.join(__dirname, "..", "client", "dist", "index.html")}`;
 
   mainWindow.loadURL(startURL);
 
@@ -222,10 +220,9 @@ app.whenReady().then(async () => {
     app.quit();
   }
 
-  if (!isDev) autoUpdater.checkForUpdates().catch(() => {
-  console.log("ℹ No updates available yet");
-});
-
+  if (!isDev) {
+    autoUpdater.checkForUpdatesAndNotify();
+  }
 });
 
 /* ======================================================
