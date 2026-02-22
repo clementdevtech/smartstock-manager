@@ -1,142 +1,41 @@
 const { app, BrowserWindow } = require("electron");
 const path = require("path");
-const { spawn } = require("child_process");
 const net = require("net");
+const http = require("http");
 const { autoUpdater } = require("electron-updater");
+const log = require("electron-log");
+const { fork } = require("child_process");
+const fs = require("fs-extra");
 
 const isDev = !app.isPackaged;
 
 let mainWindow;
 let splashWindow;
-let backendProcess;
-let backendRestartTimer;
-let backendCrashCount = 0;
+let backendProcess = null;
+
+const BACKEND_PORT = 3333;
+const HEALTH_URL = `http://127.0.0.1:${BACKEND_PORT}/api/health`;
 
 /* ======================================================
-   🛑 SINGLE INSTANCE LOCK
+   🔐 SINGLE INSTANCE
 ====================================================== */
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
 
-app.on("second-instance", () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
-  }
-});
+/* ======================================================
+   🧨 GLOBAL CRASH LOGGING
+====================================================== */
+process.on("uncaughtException", err => log.error("Uncaught:", err));
+process.on("unhandledRejection", err => log.error("Unhandled:", err));
 
 /* ======================================================
-   🔒 AUTO UPDATE (PRODUCTION ONLY)
+   🔒 AUTO UPDATER
 ====================================================== */
 if (!isDev) {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
-
-  // 🔐 Required for PRIVATE GitHub repo
-  if (process.env.GH_TOKEN) {
-    autoUpdater.requestHeaders = {
-      Authorization: `token ${process.env.GH_TOKEN}`
-    };
-  }
-
-  autoUpdater.on("checking-for-update", () => {
-    console.log("🔎 Checking for updates...");
-  });
-
-  autoUpdater.on("update-available", () => {
-    console.log("⬇ Update available. Downloading...");
-  });
-
-  autoUpdater.on("update-not-available", () => {
-    console.log("✅ No updates available.");
-  });
-
-  autoUpdater.on("update-downloaded", () => {
-    console.log("✅ Update downloaded — will install on quit.");
-  });
-
-  autoUpdater.on("error", err => {
-    console.error("❌ AutoUpdater error:", err);
-  });
-}
-
-/* ======================================================
-   🔁 PATH HELPERS
-====================================================== */
-function getServerPath() {
-  if (isDev) {
-    return path.join(__dirname, "..", "server", "server.js");
-  }
-
-  return path.join(
-    process.resourcesPath,
-    "app.asar.unpacked",
-    "server",
-    "server.js"
-  );
-}
-
-/* ======================================================
-   🔁 START BACKEND
-====================================================== */
-function getBackendExePath() {
-  if (isDev) {
-    return path.join(__dirname, "..", "server", "server.js");
-  }
-
-  return path.join(process.resourcesPath, "backend.exe");
-}
-
-function startBackend() {
-  if (backendProcess || isDev) return;
-
-  const backendPath = getBackendExePath();
-
-  backendProcess = spawn(backendPath, [], {
-    env: {
-      ...process.env,
-      NODE_ENV: "production",
-      PORT: "3333"
-    },
-    stdio: "pipe",
-    windowsHide: true
-  });
-}
-
-
-/* ======================================================
-   ⏳ WAIT FOR BACKEND
-====================================================== */
-function waitForBackend(port, timeout = 60000) {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-
-    const check = () => {
-      const socket = new net.Socket();
-      socket.setTimeout(1200);
-
-      socket.once("connect", () => {
-        socket.destroy();
-        resolve();
-      });
-
-      socket.once("error", () => {
-        socket.destroy();
-
-        if (Date.now() - start > timeout) {
-          reject(new Error("Backend timeout"));
-        } else {
-          setTimeout(check, 700);
-        }
-      });
-
-      socket.connect(port, "127.0.0.1");
-    };
-
-    check();
-  });
 }
 
 /* ======================================================
@@ -149,28 +48,37 @@ function getIcon() {
 }
 
 /* ======================================================
-   🪟 SPLASH WINDOW
+   SPLASH
 ====================================================== */
 function createSplash() {
   splashWindow = new BrowserWindow({
-    width: 420,
-    height: 320,
+    width: 540,
+    height: 420,
+    minWidth: 520,
+    minHeight: 400,
     frame: false,
     transparent: true,
     resizable: false,
     alwaysOnTop: true,
-    icon: getIcon()
+    icon: getIcon(),
+    webPreferences: {
+      preload: path.join(__dirname, "splashPreload.js"),
+      contextIsolation: true
+    }
   });
 
   splashWindow.loadFile(path.join(__dirname, "splash.html"));
 }
 
+function sendSplash(status, percent) {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  splashWindow.webContents.send("boot-status", { status, percent });
+}
+
 /* ======================================================
-   🪟 MAIN WINDOW
+   MAIN WINDOW
 ====================================================== */
 function createMainWindow() {
-  if (mainWindow) return;
-
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -178,60 +86,236 @@ function createMainWindow() {
     icon: getIcon(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      sandbox: false,
-      nodeIntegration: false
+      contextIsolation: true
     }
   });
 
-  mainWindow.webContents.on("will-navigate", e => e.preventDefault());
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-
-  const startURL = isDev
-    ? "http://localhost:5173"
-    : `file://${path.join(__dirname, "..", "client", "dist", "index.html")}`;
-
-  mainWindow.loadURL(startURL);
+  if (isDev) {
+    mainWindow.loadURL("http://localhost:5173");
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(
+      path.join(app.getAppPath(), "client", "dist", "index.html")
+    );
+  }
 
   mainWindow.once("ready-to-show", () => {
     splashWindow?.destroy();
     mainWindow.show();
   });
-
-  if (isDev) mainWindow.webContents.openDevTools();
 }
 
 /* ======================================================
-   🚀 APP BOOTSTRAP
+   BACKEND ENTRY
+====================================================== */
+function getBackendEntry() {
+  let entry;
+
+  if (isDev) {
+    entry = path.join(__dirname, "..", "server", "server.js");
+  } else {
+    entry = path.join(
+      process.resourcesPath,
+      "app.asar.unpacked",
+      "server",
+      "server.js"
+    );
+  }
+
+  console.log("Backend path:", entry);
+  return entry;
+}
+
+/* ======================================================
+   HARD KILL
+====================================================== */
+function hardKill(proc) {
+  if (!proc) return;
+  try { proc.kill("SIGKILL"); } catch {}
+}
+
+/* ======================================================
+   WAIT TCP PORT
+====================================================== */
+function waitForPort(port, timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+
+    const check = () => {
+      const socket = new net.Socket();
+      socket.setTimeout(1000);
+
+      socket.once("connect", () => {
+        socket.destroy();
+        resolve();
+      });
+
+      socket.once("error", () => {
+        socket.destroy();
+        if (Date.now() - start > timeout) {
+          reject(new Error("Port timeout"));
+        } else {
+          setTimeout(check, 500);
+        }
+      });
+
+      socket.connect(port, "127.0.0.1");
+    };
+
+    check();
+  });
+}
+
+/* ======================================================
+   WAIT HEALTH ENDPOINT
+====================================================== */
+function waitForHealth(timeout = 30000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+
+    const check = () => {
+      http.get(HEALTH_URL, res => {
+        if (res.statusCode === 200) resolve();
+        else retry();
+      }).on("error", retry);
+
+      function retry() {
+        if (Date.now() - start > timeout) {
+          reject(new Error("Health timeout"));
+        } else {
+          setTimeout(check, 1000);
+        }
+      }
+    };
+
+    check();
+  });
+}
+
+/* ======================================================
+   BACKEND WATCHDOG
+====================================================== */
+let heartbeatTimer;
+
+function startHeartbeatMonitor() {
+  clearInterval(heartbeatTimer);
+
+  heartbeatTimer = setInterval(async () => {
+    try {
+      await waitForHealth(5000);
+    } catch {
+      log.error("💥 Backend unresponsive — restarting...");
+      await restartBackend();
+    }
+  }, 15000);
+}
+
+/* ======================================================
+   START BACKEND WITH RETRY
+====================================================== */
+let startAttempts = 0;
+
+async function startBackend() {
+  const backendEntry = getBackendEntry();
+
+  if (!fs.existsSync(backendEntry)) {
+    throw new Error("Backend entry missing");
+  }
+
+  startAttempts++;
+
+  sendSplash("Starting backend…", 35);
+
+  backendProcess = fork(backendEntry, [], {
+    cwd: path.dirname(backendEntry),
+    env: {
+      ...process.env,
+      NODE_ENV: isDev ? "development" : "production",
+      PORT: String(BACKEND_PORT),
+      APP_DATA: app.getPath("userData")
+    },
+    stdio: ["ignore", "pipe", "pipe", "ipc"]
+  });
+
+  backendProcess.stdout?.on("data", d =>
+    log.info("[BACKEND]", d.toString())
+  );
+
+  backendProcess.stderr?.on("data", d =>
+    log.error("[BACKEND ERROR]", d.toString())
+  );
+
+  backendProcess.on("exit", async code => {
+    log.error("Backend exited:", code);
+
+    if (startAttempts < 10) {
+      await restartBackend();
+    } else {
+      sendSplash("Backend crash loop detected", 100);
+      app.quit();
+    }
+  });
+
+  await waitForPort(BACKEND_PORT, 60000);
+  await waitForHealth(60000);
+
+  startAttempts = 0;
+  startHeartbeatMonitor();
+}
+
+/* ======================================================
+   RESTART BACKEND
+====================================================== */
+async function restartBackend() {
+  sendSplash("Recovering backend…", 60);
+
+  clearInterval(heartbeatTimer);
+
+  if (backendProcess) {
+    backendProcess.kill("SIGTERM");
+    setTimeout(() => hardKill(backendProcess), 5000);
+  }
+
+  await startBackend();
+}
+
+/* ======================================================
+   STOP BACKEND
+====================================================== */
+function stopBackend() {
+  clearInterval(heartbeatTimer);
+
+  if (backendProcess) {
+    backendProcess.kill("SIGTERM");
+    setTimeout(() => hardKill(backendProcess), 5000);
+  }
+}
+
+/* ======================================================
+   APP BOOT
 ====================================================== */
 app.whenReady().then(async () => {
   createSplash();
-
-  if (!isDev) {
-    startBackend();
-  }
+  sendSplash("Launching SmartStock…", 5);
 
   try {
-    await waitForBackend(3333);
-    console.log("✅ Backend ready");
+    await startBackend();
+    sendSplash("Loading UI…", 85);
     createMainWindow();
-  } catch (err) {
-    console.error("❌ Backend failed:", err.message);
-    app.quit();
-  }
 
-  if (!isDev) {
-    autoUpdater.checkForUpdatesAndNotify();
+    if (!isDev) autoUpdater.checkForUpdates().catch(() => {});
+  } catch (err) {
+    log.error("Startup failed:", err);
+    sendSplash("Startup failed", 100);
+    setTimeout(() => app.quit(), 3000);
   }
 });
 
 /* ======================================================
-   🧹 CLEAN EXIT
+   CLEAN EXIT
 ====================================================== */
-app.on("before-quit", () => {
-  if (backendProcess) backendProcess.kill();
-});
-
+app.on("before-quit", stopBackend);
+app.on("will-quit", stopBackend);
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });

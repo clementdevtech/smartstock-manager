@@ -7,6 +7,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import { AuthProvider, AuthContext } from "./context/AuthContext";
 import { ToastProvider } from "@/components/ui/toast";
 import { Toaster } from "./components/ui/toaster";
+import { BusinessProvider } from "./context/BusinessContext";
 
 /* ⚡ Lazy-loaded pages */
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -170,10 +171,12 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <ToastProvider>
-        <AppContent />
-        <Toaster />
-      </ToastProvider>
+      <BusinessProvider> 
+        <ToastProvider>
+          <AppContent />
+          <Toaster />
+        </ToastProvider>
+      </BusinessProvider>
     </AuthProvider>
   );
 }

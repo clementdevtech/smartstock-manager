@@ -2,26 +2,12 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
-const { createRequire } = require("module");
-
-const requireFunc = createRequire(__filename);
-
-let Database;
-
-if (process.pkg) {
-  // running inside packaged exe
-  const basePath = path.dirname(process.execPath);
-  Database = requireFunc(
-    path.join(basePath, "node_modules/better-sqlite3")
-  );
-} else {
-  // normal dev mode
-  Database = requireFunc("better-sqlite3");
-}
+const isElectron = !!process.versions.electron;
 
 /* =====================================================
-   WRITEABLE APP DATA DIRECTORY (ELECTRON + PROD SAFE)
+   WRITEABLE APP DATA DIRECTORY
 ===================================================== */
+
 function getAppDataDir() {
   const appName = "SmartStockPOS";
 
@@ -39,26 +25,75 @@ function getAppDataDir() {
 const DATA_DIR = getAppDataDir();
 const DB_PATH = path.join(DATA_DIR, "data.db");
 
-/* =====================================================
-   ENSURE DATA DIRECTORY EXISTS
-===================================================== */
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-/* =====================================================
-   SQLITE INIT
-===================================================== */
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
 
-console.log("📦 SQLite initialized at:", DB_PATH);
+let db;
+let rawDb;
+
+if (isElectron) {
+  const BetterSqlite3 = require("better-sqlite3");
+
+  rawDb = new BetterSqlite3(DB_PATH);
+  rawDb.pragma("journal_mode = WAL");
+  rawDb.pragma("foreign_keys = ON");
+
+  console.log("📦 SQLite initialized (Electron):", DB_PATH);
+
+} else {
+  const sqlite3 = require("sqlite3").verbose();
+
+  rawDb = new sqlite3.Database(DB_PATH, err => {
+    if (err) throw err;
+  });
+
+  rawDb.serialize(() => {
+    rawDb.run("PRAGMA journal_mode = WAL");
+    rawDb.run("PRAGMA foreign_keys = ON");
+  });
+
+  console.log("📦 SQLite initialized (Web):", DB_PATH);
+}
+
 
 /* =====================================================
-   BASE TABLES (OFFLINE CACHE)
+   CORE TABLES (MERGED)
 ===================================================== */
-db.exec(`
+
+function exec(sql) {
+  if (isElectron) {
+    rawDb.exec(sql);
+  } else {
+    rawDb.exec
+      ? rawDb.exec(sql)
+      : rawDb.serialize(() => rawDb.run(sql));
+  }
+}
+
+exec(`
+
+/* =========================
+   STORES
+========================= */
+CREATE TABLE IF NOT EXISTS local_stores (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  name TEXT NOT NULL,
+  location TEXT,
+  adminId TEXT NOT NULL,
+  businessType TEXT DEFAULT 'retail',
+  industryType TEXT DEFAULT 'retail',
+  isMainBranch INTEGER DEFAULT 0,
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   USERS
+========================= */
 CREATE TABLE IF NOT EXISTS local_users (
   id INTEGER PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
@@ -75,54 +110,159 @@ CREATE TABLE IF NOT EXISTS local_users (
   syncStatus TEXT DEFAULT 'local',
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT,
-  CONSTRAINT local_users_only_users CHECK (role = 'user')
+  CHECK (role = 'user')
 );
 
+/* =========================
+   INVENTORY (UPGRADED)
+========================= */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY,
   postgresId TEXT,
   sku TEXT NOT NULL,
+  barcode TEXT,
   name TEXT NOT NULL,
   category TEXT,
+  itemType TEXT DEFAULT 'product',
   unit TEXT DEFAULT 'pcs',
+  allowDecimalSales INTEGER DEFAULT 0,
   wholesalePrice REAL,
   retailPrice REAL,
-  quantity INTEGER DEFAULT 0,
-  lowStockThreshold INTEGER DEFAULT 5,
+  quantity REAL DEFAULT 0,
+  lowStockThreshold REAL DEFAULT 5,
+  trackBatches INTEGER DEFAULT 0,
+  trackExpiry INTEGER DEFAULT 0,
+  isControlled INTEGER DEFAULT 0,
   supplier TEXT,
-  batchNumber TEXT,
-  expiryDate TEXT,
   adminId TEXT NOT NULL,
   storeId TEXT NOT NULL,
   version INTEGER DEFAULT 1,
   deviceId TEXT,
   deleted INTEGER DEFAULT 0,
-  syncStatus TEXT DEFAULT 'pending',
   retryCount INTEGER DEFAULT 0,
+  syncStatus TEXT DEFAULT 'pending',
   lastSyncedAt TEXT,
   updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_local_items_sku ON local_items (sku);
+CREATE INDEX IF NOT EXISTS idx_local_items_store
+ON local_items (storeId);
 
+CREATE INDEX IF NOT EXISTS idx_local_items_admin
+ON local_items (adminId);
+
+CREATE INDEX IF NOT EXISTS idx_local_items_sync
+ON local_items (syncStatus);
+
+/* =========================
+   ITEM BATCHES
+========================= */
+CREATE TABLE IF NOT EXISTS item_batches (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  itemId INTEGER NOT NULL,
+  batchNumber TEXT,
+  expiryDate TEXT,
+  quantity REAL NOT NULL,
+  costPrice REAL,
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   RECIPES
+========================= */
+CREATE TABLE IF NOT EXISTS recipes (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  finishedItemId INTEGER NOT NULL,
+  ingredientId INTEGER NOT NULL,
+  quantityRequired REAL NOT NULL,
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   SALES HEADER
+========================= */
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY,
   postgresId TEXT,
   receiptNo TEXT UNIQUE,
-  items TEXT NOT NULL,
   subtotal REAL,
   tax REAL,
   total REAL,
   paymentType TEXT,
-  paymentStatus TEXT,
+  paymentStatus TEXT DEFAULT 'paid',
   cashierId TEXT,
   storeId TEXT,
   adminId TEXT,
+  version INTEGER DEFAULT 1,
   syncStatus TEXT DEFAULT 'pending',
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
 );
 
+/* =========================
+   SALE LINE ITEMS
+========================= */
+CREATE TABLE IF NOT EXISTS sale_items (
+  id INTEGER PRIMARY KEY,
+  saleId INTEGER NOT NULL,
+  itemId INTEGER NOT NULL,
+  quantity REAL NOT NULL,
+  unitPrice REAL NOT NULL,
+  totalPrice REAL NOT NULL,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   STOCK MOVEMENTS
+========================= */
+CREATE TABLE IF NOT EXISTS stock_movements (
+  id INTEGER PRIMARY KEY,
+  itemId INTEGER NOT NULL,
+  movementType TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  referenceId INTEGER,
+  notes TEXT,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   STOCK TRANSFERS
+========================= */
+CREATE TABLE IF NOT EXISTS stock_transfers (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  fromStoreId TEXT NOT NULL,
+  toStoreId TEXT NOT NULL,
+  items TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  adminId TEXT NOT NULL,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  syncedAt TEXT
+);
+
+/* =========================
+   INVENTORY ADJUSTMENTS
+========================= */
+CREATE TABLE IF NOT EXISTS inventory_adjustments (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  itemId INTEGER,
+  storeId TEXT,
+  adminId TEXT,
+  type TEXT,
+  quantityChange REAL,
+  reason TEXT,
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  syncStatus TEXT DEFAULT 'pending'
+);
+
+/* =========================
+   RECEIPTS
+========================= */
 CREATE TABLE IF NOT EXISTS receipts (
   id INTEGER PRIMARY KEY,
   saleId INTEGER,
@@ -131,11 +271,29 @@ CREATE TABLE IF NOT EXISTS receipts (
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+/* =========================
+   ROOMS (HOTEL)
+========================= */
+CREATE TABLE IF NOT EXISTS rooms (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  roomNumber TEXT NOT NULL,
+  status TEXT DEFAULT 'available',
+  pricePerNight REAL NOT NULL,
+  storeId TEXT NOT NULL,
+  syncStatus TEXT DEFAULT 'pending',
+  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+/* =========================
+   CASHIER SHIFTS
+========================= */
 CREATE TABLE IF NOT EXISTS cashier_shifts (
   id INTEGER PRIMARY KEY,
   postgresId TEXT,
   cashierId TEXT,
   storeId TEXT,
+  adminId TEXT,
   openingCash REAL DEFAULT 0,
   closingCash REAL,
   expectedCash REAL,
@@ -145,11 +303,15 @@ CREATE TABLE IF NOT EXISTS cashier_shifts (
   syncStatus TEXT DEFAULT 'pending'
 );
 
+/* =========================
+   Z REPORTS
+========================= */
 CREATE TABLE IF NOT EXISTS z_reports (
   id INTEGER PRIMARY KEY,
   postgresId TEXT,
   storeId TEXT,
   cashierId TEXT,
+  adminId TEXT,
   totalSales REAL,
   cashSales REAL,
   cardSales REAL,
@@ -159,6 +321,9 @@ CREATE TABLE IF NOT EXISTS z_reports (
   syncStatus TEXT DEFAULT 'pending'
 );
 
+/* =========================
+   VERIFICATION CODES
+========================= */
 CREATE TABLE IF NOT EXISTS verification_codes (
   id INTEGER PRIMARY KEY,
   email TEXT,
@@ -166,6 +331,9 @@ CREATE TABLE IF NOT EXISTS verification_codes (
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+/* =========================
+   OFFLINE LOGOS
+========================= */
 CREATE TABLE IF NOT EXISTS offline_logos (
   id INTEGER PRIMARY KEY,
   store_name TEXT NOT NULL,
@@ -176,66 +344,148 @@ CREATE TABLE IF NOT EXISTS offline_logos (
   cloudinary_url TEXT,
   cloudinary_public_id TEXT
 );
+
 `);
+
+
+/* =====================================================
+   DB WRAPPER (MUST COME BEFORE MIGRATIONS)
+===================================================== */
+db = {
+  run(sql, params = []) {
+    if (isElectron) {
+      return rawDb.prepare(sql).run(params);
+    }
+
+    return new Promise((resolve, reject) => {
+      rawDb.run(sql, params, function (err) {
+        if (err) reject(err);
+        else resolve(this);
+      });
+    });
+  },
+
+  get(sql, params = []) {
+    if (isElectron) {
+      return rawDb.prepare(sql).get(params);
+    }
+
+    return new Promise((resolve, reject) => {
+      rawDb.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  },
+
+  all(sql, params = []) {
+    if (isElectron) {
+      return rawDb.prepare(sql).all(params);
+    }
+
+    return new Promise((resolve, reject) => {
+      rawDb.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  },
+
+  transaction(fn) {
+    if (isElectron) {
+      return rawDb.transaction(fn)();
+    }
+
+    return new Promise(async (resolve, reject) => {
+      try {
+        await db.run("BEGIN");
+        await fn();
+        await db.run("COMMIT");
+        resolve();
+      } catch (e) {
+        await db.run("ROLLBACK");
+        reject(e);
+      }
+    });
+  },
+
+  raw: rawDb
+};
+
 
 /* =====================================================
    🔥 BACKWARD-SAFE MIGRATIONS
 ===================================================== */
-function migrate(table, column, type = "TEXT") {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
-  if (!cols.includes(column)) {
-    console.log(`🛠 Migrating: ${table}.${column}`);
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+async function migrate(table, column, type = "TEXT") {
+  try {
+    const cols = await db.all(`PRAGMA table_info(${table})`);
+    const names = cols.map(c => c.name);
+
+    if (!names.includes(column)) {
+      console.log(`🛠 Migrating: ${table}.${column}`);
+      await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  } catch (err) {
+    console.error(`❌ Migration failed for ${table}.${column}`, err);
   }
 }
 
-/* =====================================================
-   MIGRATIONS (NON-DESTRUCTIVE)
-===================================================== */
-migrate("local_users", "phone");
-migrate("local_users", "country");
-migrate("local_users", "logoUrl");
-migrate("local_users", "syncStatus");
-migrate("local_users", "reset_password_token");
-migrate("local_users", "reset_password_expire");
-
-migrate("local_items", "postgresId");
-migrate("local_items", "syncStatus");
-migrate("offline_sales", "postgresId");
-migrate("local_users", "role", "TEXT DEFAULT 'user'");
 
 /* =====================================================
-   INDEXES (SAFE)
+   🚀 RUN MIGRATIONS (SAFE + ORDERED)
 ===================================================== */
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_local_items_sync
-  ON local_items (syncStatus);
-`);
+(async () => {
+  try {
 
-/* =====================================================
-   🧹 AUTO-CLEANUP (FIX EARLIER MESSES)
-   - removes leaked admins from local_users
-===================================================== */
-db.exec(`
-  DELETE FROM local_users
-  WHERE role != 'user';
-`);
+    /* ===== ENTERPRISE MIGRATIONS ===== */
 
-/* =====================================================
-   DB WRAPPER
-===================================================== */
-module.exports = {
-  run(sql, params = []) {
-    return db.prepare(sql).run(params);
-  },
-  get(sql, params = []) {
-    return db.prepare(sql).get(params);
-  },
-  all(sql, params = []) {
-    return db.prepare(sql).all(params);
-  },
-  transaction(fn) {
-    return db.transaction(fn)();
-  },
-  db
-};
+    await migrate("local_stores", "industryType");
+
+    await migrate("local_items", "barcode");
+    await migrate("local_items", "itemType");
+    await migrate("local_items", "allowDecimalSales", "INTEGER DEFAULT 0");
+    await migrate("local_items", "trackBatches", "INTEGER DEFAULT 0");
+    await migrate("local_items", "trackExpiry", "INTEGER DEFAULT 0");
+    await migrate("local_items", "isControlled", "INTEGER DEFAULT 0");
+    await migrate("local_items", "quantity", "REAL DEFAULT 0");
+
+    /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
+
+    await migrate("local_users", "phone");
+    await migrate("local_users", "country");
+    await migrate("local_users", "logoUrl");
+    await migrate("local_users", "syncStatus");
+    await migrate("local_users", "reset_password_token");
+    await migrate("local_users", "reset_password_expire");
+    await migrate("local_users", "role", "TEXT DEFAULT 'user'");
+
+    await migrate("offline_sales", "postgresId");
+    await migrate("offline_sales", "version", "INTEGER DEFAULT 1");
+
+    await migrate("cashier_shifts", "adminId");
+    await migrate("z_reports", "adminId");
+
+    console.log("✅ All migrations complete");
+
+    /* =====================================================
+       INDEXES (SAFE)
+    ===================================================== */
+    await db.run(`
+      CREATE INDEX IF NOT EXISTS idx_local_items_sync
+      ON local_items (syncStatus);
+    `);
+
+    /* =====================================================
+       🧹 AUTO-CLEANUP
+    ===================================================== */
+    await db.run(`
+      DELETE FROM local_users
+      WHERE role != 'user';
+    `);
+
+  } catch (err) {
+    console.error("❌ Migration system failed:", err);
+  }
+})();
+
+module.exports = db;

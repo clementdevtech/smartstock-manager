@@ -6,7 +6,7 @@ const {
   updateBusinessSettings,
 } = require("../controllers/settingsController");
 
-router.get("/business", protect, getBusinessSettings);
+router.get("/", protect, getBusinessSettings);
 router.put("/business", protect, updateBusinessSettings);
 
 module.exports = router;

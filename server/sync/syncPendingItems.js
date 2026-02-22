@@ -23,14 +23,13 @@ function backoff(retryCount) {
 /* =====================================================
    SQLITE SCHEMA HEALER
 ===================================================== */
-function ensureColumn(table, column, type = "TEXT") {
-  const cols = sqlite
-    .all(`PRAGMA table_info(${table})`)
-    .map(c => c.name);
+async function ensureColumn(table, column, type = "TEXT") {
+  const cols = await sqlite.all(`PRAGMA table_info(${table})`);
+  const names = cols.map(c => c.name);
 
-  if (!cols.includes(column)) {
+  if (!names.includes(column)) {
     console.warn(`🛠 Auto-healing: ${table}.${column}`);
-    sqlite.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    await sqlite.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 }
 
@@ -45,9 +44,9 @@ function healLocalItemsSchema() {
 /* =====================================================
    SAFE SQLITE QUERY WRAPPER
 ===================================================== */
-function safeSelectPendingItems() {
+async function safeSelectPendingItems() {
   try {
-    return sqlite.all(`
+    return await sqlite.all(`
       SELECT *
       FROM local_items
       WHERE syncStatus = 'pending'
@@ -70,7 +69,7 @@ function safeSelectPendingItems() {
 async function syncPendingItems() {
   if (!(await isOnline())) return;
 
-  const pendingItems = safeSelectPendingItems();
+  const pendingItems = await safeSelectPendingItems();
 
   for (const item of pendingItems) {
     try {

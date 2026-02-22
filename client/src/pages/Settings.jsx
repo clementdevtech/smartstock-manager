@@ -17,6 +17,8 @@ import ToggleSwitch from "../components/ToggleSwitch";
 import Toast from "../components/Toast";
 
 import { api } from "../utils/api";
+import { useBusiness } from "../context/BusinessContext";
+
 import { changePassword,
   getBusinessInfo,
   updateBusinessInfo,
@@ -25,6 +27,7 @@ import { changePassword,
 const Settings = () => {
   const [profile, setProfile] = useState(null);
   const [toast, setToast] = useState(null);
+  const { businessType, setBusinessType } = useBusiness();
 
   const [darkMode, setDarkMode] = useState(
     localStorage.getItem("theme") === "dark"
@@ -44,6 +47,16 @@ const Settings = () => {
     phone: "",
     email: "",
   });
+
+  const BUSINESS_TYPES = [
+  "retail",
+  "pharmacy",
+  "restaurant",
+  "wholesale",
+  "electronics",
+  "hardware",
+];
+
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showBusinessModal, setShowBusinessModal] = useState(false);
@@ -236,6 +249,26 @@ const Settings = () => {
           </button>
         </div>
       )}
+
+
+
+        {/* ===== BUSINESS TYPE (ADMIN ONLY) ===== */}
+
+  <div className="card">
+    <label className="block mb-1 font-medium">Business Type</label>
+    <select
+      value={businessType}
+      onChange={(e) => setBusinessType(e.target.value)}
+      className="w-full p-2 border rounded-md"
+    >
+      {BUSINESS_TYPES.map((type) => (
+        <option key={type} value={type}>
+          {type.charAt(0).toUpperCase() + type.slice(1)}
+        </option>
+      ))}
+    </select>
+  </div>
+
 
       {/* ===== BACKUP (ADMIN ONLY) ===== */}
       {isAdmin && (

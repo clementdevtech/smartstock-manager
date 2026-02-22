@@ -1,26 +1,27 @@
 {
   "name": "smartstock-manager-backend",
   "version": "1.0.0",
-  "description": "Backend API for SmartStock Manager Pro - Node.js + Express + SQLite/MongoDB",
+  "description": "Backend API for SmartStock Manager Pro - Node.js + Express + SQLite/Postgres",
   "main": "server.js",
   "author": "Clement DevTech",
   "license": "MIT",
-
+  "private": true,
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
-
   "dependencies": {
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.4.6",
+    "bindings": "^1.5.0",
     "cloudinary": "^1.41.3",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "express-async-handler": "^1.2.0",
+    "express-rate-limit": "^8.2.1",
     "fs-extra": "^11.2.0",
+    "helmet": "^8.1.0",
     "json2csv": "^6.0.0-alpha.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.0",
@@ -29,17 +30,10 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^7.0.11",
     "pdfkit": "^0.17.2",
-    "pg": "^8.18.0"
+    "pg": "^8.18.0",
+    "sqlite3": "^5.1.7"
   },
-
   "devDependencies": {
-    "nodemon": "^3.1.0",
-    "pkg": "^5.8.1"
-  },
-
-  "pkg": {
-    "assets": [
-      "node_modules/better-sqlite3/build/Release/*.node"
-    ]
+    "nodemon": "^3.1.0"
   }
 }

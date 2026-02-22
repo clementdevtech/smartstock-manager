@@ -1,78 +1,77 @@
 {
   "name": "smartstock-desktop",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "private": true,
   "main": "electron/main.js",
   "author": "Clement DevTech",
   "description": "SmartStock POS – Offline-first inventory & sales system",
-
   "engines": {
     "node": ">=20.11.0"
   },
-
   "devDependencies": {
     "concurrently": "^9.2.1",
     "cross-env": "^7.0.3",
-    "electron": "^40.0.0",
-    "electron-builder": "^26.4.0",
+    "electron": "^40.4.1",
+    "electron-builder": "^26.7.0",
     "electron-rebuild": "^3.2.9",
     "wait-on": "^7.2.0"
   },
-
   "dependencies": {
     "@zxing/browser": "^0.1.5",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.6.2",
+    "bindings": "^1.5.0",
+    "cloudinary": "^1.41.3",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "electron-updater": "^6.7.3"
+    "electron-log": "^5.4.3",
+    "electron-updater": "^6.7.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "express-async-handler": "^1.2.0",
+    "express-rate-limit": "^8.2.1",
+    "fs-extra": "^11.3.3",
+    "helmet": "^8.1.0",
+    "json2csv": "^6.0.0-alpha.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.4.0",
+    "morgan": "^1.10.0",
+    "multer": "^1.4.5-lts.1",
+    "multer-storage-cloudinary": "^4.0.0",
+    "nodemailer": "^7.0.11",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.18.0"
   },
-
   "scripts": {
-    "postinstall": "electron-rebuild -f -w better-sqlite3 --module-dir server",
-
     "dev:client": "cd client && npm run dev",
-    "dev:server": "cd server && npm run dev",
-
-    "dev": "npm run rebuild && concurrently -k \"npm run dev:server\" \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
-
+    "dev": "concurrently -k \"npm run dev:client\" \"wait-on http://localhost:5173 && electron .\"",
     "build:client": "cd client && npm run build",
-    "build:backend": "pkg server/server.js --targets node20-win-x64 --output server-dist/backend.exe",
-
-    "rebuild": "electron-rebuild -f -w better-sqlite3 --module-dir server",
-
-    "build": "npm run build:client && electron-builder",
-    "rebuild:native": "electron-rebuild -f -w better-sqlite3 --module-dir server",
-    "build:win": "npm run rebuild:native && npm run build:client && electron-builder --win --publish always",
-    "build:linux": "npm run build:client && electron-builder --linux --publish always",
-    "build:mac": "npm run build:client && electron-builder --mac --publish always",
-
+    "rebuild:electron": "electron-builder install-app-deps",
+    "build": "npm run build:client && npm run rebuild:electron && electron-builder",
+    "build:win": "npm run build:client && npm run rebuild:electron && electron-builder --win --publish always",
+    "build:linux": "npm run build:client && npm run rebuild:electron && electron-builder --linux --publish always",
+    "build:mac": "npm run build:client && npm run rebuild:electron && electron-builder --mac --publish always",
+    "postinstall": "electron-builder install-app-deps",
     "clear-cache": "node electron/clear-cache.js"
   },
-
   "build": {
     "appId": "com.smartstock.pos",
     "productName": "SmartStock POS",
-
-    "npmRebuild": false,
-    "buildDependenciesFromSource": true,
-
+    "asar": true,
+    "asarUnpack": [
+       "server/**/*",
+       "node_modules/**/*"
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "build"
     },
-
     "files": [
       "electron/**/*",
       "client/dist/**/*",
       "server/**/*",
       "package.json"
     ],
-
-    "extraResources": [
-      {
-          "from": "server-dist/backend.exe",
-          "to": "backend.exe"
-        }
-    ],
-
     "publish": [
       {
         "provider": "github",
@@ -81,37 +80,42 @@
         "releaseType": "release"
       }
     ],
-
     "win": {
       "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "SmartStock-POS-Setup-${version}-${arch}.exe"
     },
-
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "uninstallDisplayName": "SmartStock POS",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
-
     "linux": {
       "icon": "build",
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "artifactName": "SmartStock-POS-${version}-${arch}.${ext}"
     },
-
     "mac": {
       "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "artifactName": "SmartStock-POS-${version}-${arch}.dmg",

@@ -2,10 +2,10 @@ const db = require("../sqlite");
 const { query } = require("../config/db");
 
 /* =====================================================
-   🔁 SYNC OFFLINE SALES → SUPABASE (FINAL)
+   🔁 SYNC OFFLINE SALES → SUPABASE
 ===================================================== */
 async function syncOfflineSales() {
-  // 1️⃣ Check Postgres availability
+  /* 1️⃣ Check Postgres availability */
   try {
     await query("SELECT 1");
   } catch {
@@ -13,20 +13,26 @@ async function syncOfflineSales() {
     return;
   }
 
-  // 2️⃣ Fetch pending offline sales
-  const pendingSales = db.all(`
-    SELECT *
-    FROM offline_sales
-    WHERE syncStatus = 'pending'
-    ORDER BY createdAt ASC
-  `);
+  /* 2️⃣ Fetch pending offline sales */
+  let pendingSales;
 
-  if (pendingSales.length === 0) {
+  try {
+    pendingSales = await db.all(`
+      SELECT *
+      FROM offline_sales
+      WHERE syncStatus = 'pending'
+      ORDER BY createdAt ASC
+    `);
+  } catch (err) {
+    console.error("❌ Failed reading offline_sales:", err.message);
     return;
   }
 
+  if (!pendingSales.length) return;
+
   console.log(`🔄 Syncing ${pendingSales.length} sale(s) → Supabase`);
 
+  /* 3️⃣ Sync each sale */
   for (const sale of pendingSales) {
     try {
       const result = await query(
@@ -48,22 +54,22 @@ async function syncOfflineSales() {
         RETURNING id
         `,
         [
-          JSON.parse(sale.items),          // jsonb
-          sale.total,                      // total_amount
-          0,                               // total_profit (calc later if needed)
-          sale.paymentStatus || "paid",    // payment_status
-          "Walk-in Customer",              // customer_name
-          sale.createdAt,                  // sale_date
-          sale.adminId,                    // admin_id
-          sale.storeId,                    // store_id
-          sale.cashierId || sale.adminId   // created_by
+          JSON.parse(sale.items),
+          sale.total,
+          0,
+          sale.paymentStatus || "paid",
+          "Walk-in Customer",
+          sale.createdAt,
+          sale.adminId,
+          sale.storeId,
+          sale.cashierId || sale.adminId
         ]
       );
 
       const postgresId = result.rows[0].id;
 
-      // 3️⃣ Mark as synced locally
-      db.run(
+      /* 4️⃣ Mark as synced locally */
+      await db.run(
         `
         UPDATE offline_sales
         SET
@@ -76,6 +82,7 @@ async function syncOfflineSales() {
       );
 
       console.log(`✅ Sale synced → ${postgresId}`);
+
     } catch (err) {
       console.error(
         `❌ Failed to sync sale ${sale.receiptNo || sale.id}:`,

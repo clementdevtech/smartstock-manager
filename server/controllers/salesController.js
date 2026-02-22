@@ -2,9 +2,7 @@ const asyncHandler = require("express-async-handler");
 const db = require("../sqlite");
 
 /* =====================================================
-   @desc    Create a new sale (OFFLINE POS)
-   @route   POST /api/sales
-   @access  Private
+   CREATE SALE (ENTERPRISE OFFLINE POS)
 ===================================================== */
 const createSale = asyncHandler(async (req, res) => {
   const { items, paymentType, customerName } = req.body;
@@ -21,7 +19,7 @@ const createSale = asyncHandler(async (req, res) => {
   let subtotal = 0;
 
   /* ===============================
-     🔐 VALIDATE STOCK (LOCAL)
+     🔐 VALIDATE STOCK + CALCULATE
   ============================== */
   for (const sold of items) {
     if (!sold.itemId || !sold.quantity || sold.quantity <= 0) {
@@ -30,25 +28,22 @@ const createSale = asyncHandler(async (req, res) => {
     }
 
     const item = db.get(
-      `
-      SELECT id, name, quantity, retailPrice
-      FROM local_items
-      WHERE id = ? AND storeId = ? AND adminId = ?
-      `,
+      `SELECT * FROM local_items
+       WHERE id = ? AND storeId = ? AND adminId = ? AND deleted = 0`,
       [sold.itemId, storeId, adminId]
     );
 
     if (!item) {
       res.status(403);
-      throw new Error("Invalid item or unauthorized access");
+      throw new Error("Invalid item or unauthorized");
     }
 
-    if (item.quantity < sold.quantity) {
+    if (Number(item.quantity) < Number(sold.quantity)) {
       res.status(400);
       throw new Error(`Insufficient stock for ${item.name}`);
     }
 
-    subtotal += item.retailPrice * sold.quantity;
+    subtotal += Number(item.retailPrice) * Number(sold.quantity);
   }
 
   const tax = 0;
@@ -59,12 +54,11 @@ const createSale = asyncHandler(async (req, res) => {
      🔄 ATOMIC SQLITE TRANSACTION
   ============================== */
   db.transaction(() => {
-    // 1️⃣ Insert offline sale
+    // 1️⃣ Insert sale header
     db.run(
       `
       INSERT INTO offline_sales (
         receiptNo,
-        items,
         subtotal,
         tax,
         total,
@@ -74,11 +68,11 @@ const createSale = asyncHandler(async (req, res) => {
         storeId,
         adminId,
         syncStatus
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         receiptNo,
-        JSON.stringify(items),
         subtotal,
         tax,
         total,
@@ -87,27 +81,132 @@ const createSale = asyncHandler(async (req, res) => {
         cashierId,
         storeId,
         adminId,
-        "pending" // ⏳ waiting for Postgres sync
+        "pending",
       ]
     );
 
-    // 2️⃣ Deduct inventory
+    const saleId = db.get(
+      `SELECT id FROM offline_sales WHERE receiptNo = ?`,
+      [receiptNo]
+    ).id;
+
+    /* ===============================
+       2️⃣ PROCESS EACH SOLD ITEM
+    ============================== */
     for (const sold of items) {
+      const item = db.get(
+        `SELECT * FROM local_items WHERE id = ?`,
+        [sold.itemId]
+      );
+
+      /* Insert relational sale_items */
       db.run(
         `
-        UPDATE local_items
-        SET quantity = quantity - ?,
-            updatedAt = CURRENT_TIMESTAMP,
-            syncStatus = 'pending'
-        WHERE id = ? AND storeId = ? AND adminId = ?
+        INSERT INTO sale_items (
+          saleId, itemId, quantity, unitPrice, totalPrice
+        )
+        VALUES (?, ?, ?, ?, ?)
         `,
-        [sold.quantity, sold.itemId, storeId, adminId]
+        [
+          saleId,
+          sold.itemId,
+          sold.quantity,
+          item.retailPrice,
+          item.retailPrice * sold.quantity,
+        ]
       );
+
+      /* ===== Recipe Deduction (BAR MODE) ===== */
+      const recipeRows = db.all(
+        `SELECT * FROM recipes WHERE finishedItemId = ?`,
+        [sold.itemId]
+      );
+
+      if (recipeRows.length > 0) {
+        for (const r of recipeRows) {
+          const totalIngredientQty =
+            Number(r.quantityRequired) * Number(sold.quantity);
+
+          db.run(
+            `
+            UPDATE local_items
+            SET quantity = quantity - ?,
+                updatedAt = CURRENT_TIMESTAMP,
+                syncStatus = 'pending'
+            WHERE id = ?
+            `,
+            [totalIngredientQty, r.ingredientId]
+          );
+
+          db.run(
+            `
+            INSERT INTO stock_movements (
+              itemId, movementType, quantity, referenceId, notes
+            )
+            VALUES (?, 'sale', ?, ?, 'Recipe deduction')
+            `,
+            [r.ingredientId, -totalIngredientQty, saleId]
+          );
+        }
+      } else {
+        /* ===== Normal Stock Deduction ===== */
+        db.run(
+          `
+          UPDATE local_items
+          SET quantity = quantity - ?,
+              updatedAt = CURRENT_TIMESTAMP,
+              syncStatus = 'pending'
+          WHERE id = ?
+          `,
+          [sold.quantity, sold.itemId]
+        );
+
+        db.run(
+          `
+          INSERT INTO stock_movements (
+            itemId, movementType, quantity, referenceId
+          )
+          VALUES (?, 'sale', ?, ?)
+          `,
+          [sold.itemId, -sold.quantity, saleId]
+        );
+      }
+
+      /* ===== Batch FIFO Deduction ===== */
+      const trackBatches = item.trackBatches === 1;
+
+      if (trackBatches) {
+        let remaining = Number(sold.quantity);
+
+        const batches = db.all(
+          `
+          SELECT * FROM item_batches
+          WHERE itemId = ?
+          ORDER BY expiryDate ASC
+          `,
+          [sold.itemId]
+        );
+
+        for (const batch of batches) {
+          if (remaining <= 0) break;
+
+          const deduct = Math.min(batch.quantity, remaining);
+
+          db.run(
+            `UPDATE item_batches
+             SET quantity = quantity - ?
+             WHERE id = ?`,
+            [deduct, batch.id]
+          );
+
+          remaining -= deduct;
+        }
+      }
     }
   });
 
   res.status(201).json({
-    message: "Sale completed (offline)",
+    message: "Sale completed (enterprise offline)",
     receiptNo,
     total,
     customerName: customerName || "Walk-in Customer",
@@ -115,42 +214,40 @@ const createSale = asyncHandler(async (req, res) => {
 });
 
 /* =====================================================
-   @desc    Get all local sales (OFFLINE)
+   GET SALES (RELATIONAL)
 ===================================================== */
 const getSales = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
+  const storeId = req.user.storeId;
 
   const sales = db.all(
-    `
-    SELECT *
-    FROM offline_sales
-    WHERE storeId = ? AND adminId = ?
-    ORDER BY createdAt DESC
-    `,
-    [req.user.storeId, adminId]
+    `SELECT * FROM offline_sales
+     WHERE storeId = ? AND adminId = ?
+     ORDER BY createdAt DESC`,
+    [storeId, adminId]
   );
 
-  const formatted = sales.map(sale => ({
-    ...sale,
-    items: safeParseJSON(sale.items),
-  }));
+  for (const sale of sales) {
+    sale.items = db.all(
+      `SELECT * FROM sale_items WHERE saleId = ?`,
+      [sale.id]
+    );
+  }
 
-  res.json(formatted);
+  res.json(sales);
 });
 
 /* =====================================================
-   @desc    Get single sale
+   GET SALE BY ID
 ===================================================== */
 const getSaleById = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
+  const storeId = req.user.storeId;
 
   const sale = db.get(
-    `
-    SELECT *
-    FROM offline_sales
-    WHERE id = ? AND storeId = ? AND adminId = ?
-    `,
-    [req.params.id, req.user.storeId, adminId]
+    `SELECT * FROM offline_sales
+     WHERE id = ? AND storeId = ? AND adminId = ?`,
+    [req.params.id, storeId, adminId]
   );
 
   if (!sale) {
@@ -158,42 +255,16 @@ const getSaleById = asyncHandler(async (req, res) => {
     throw new Error("Sale not found");
   }
 
-  sale.items = safeParseJSON(sale.items);
+  sale.items = db.all(
+    `SELECT * FROM sale_items WHERE saleId = ?`,
+    [sale.id]
+  );
+
   res.json(sale);
 });
 
 /* =====================================================
-   @desc    Delete sale (OFFLINE SAFE)
-===================================================== */
-const deleteSale = asyncHandler(async (req, res) => {
-  const adminId = req.user.adminId || req.user.id;
-
-  const sale = db.get(
-    `
-    SELECT *
-    FROM offline_sales
-    WHERE id = ? AND storeId = ? AND adminId = ?
-    `,
-    [req.params.id, req.user.storeId, adminId]
-  );
-
-  if (!sale) {
-    res.status(404);
-    throw new Error("Sale not found");
-  }
-
-  if (sale.cashierId !== req.user.id) {
-    res.status(403);
-    throw new Error("Not authorized to delete this sale");
-  }
-
-  db.run(`DELETE FROM offline_sales WHERE id = ?`, [req.params.id]);
-
-  res.json({ message: "Sale deleted locally" });
-});
-
-/* =====================================================
-   @desc    Daily summary (OFFLINE DASHBOARD)
+   DAILY SUMMARY
 ===================================================== */
 const getDailySummary = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
@@ -218,21 +289,47 @@ const getDailySummary = asyncHandler(async (req, res) => {
   });
 });
 
+
+
 /* =====================================================
-   🧠 UTIL
+   DELETE SALE (SOFT DELETE – SAFE)
 ===================================================== */
-function safeParseJSON(value) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return [];
+const deleteSale = asyncHandler(async (req, res) => {
+  const adminId = req.user.adminId || req.user.id;
+  const storeId = req.user.storeId;
+  const saleId = req.params.id;
+
+  const sale = db.get(
+    `SELECT * FROM offline_sales
+     WHERE id = ? AND storeId = ? AND adminId = ?`,
+    [saleId, storeId, adminId]
+  );
+
+  if (!sale) {
+    res.status(404);
+    throw new Error("Sale not found");
   }
-}
+
+  // 🔒 Soft delete (recommended for POS audit safety)
+  db.run(
+    `
+    UPDATE offline_sales
+    SET deleted = 1,
+        syncStatus = 'pending',
+        updatedAt = CURRENT_TIMESTAMP
+    WHERE id = ?
+    `,
+    [saleId]
+  );
+
+  res.json({ message: "Sale deleted successfully" });
+});
+
 
 module.exports = {
   createSale,
   getSales,
   getSaleById,
-  deleteSale,
   getDailySummary,
+  deleteSale,
 };

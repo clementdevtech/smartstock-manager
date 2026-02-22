@@ -12,37 +12,80 @@ import {
 import Modal from "../components/Modal";
 import Toast from "../components/Toast";
 import { api } from "../utils/api";
+import { useBusiness } from "../context/BusinessContext";
 
 /* =====================================================
-   Defaults
+   Dynamic Default Form Based On Business Type
 ===================================================== */
-const DEFAULT_FORM = {
-  name: "",
-  sku: "",
-  category: "other",
-  unit: "pcs",
-  supplier: "",
-  wholesalePrice: "",
-  retailPrice: "",
-  quantity: "",
-  lowStockThreshold: 5,
-  entryDate: "",
-  expiryDate: "",
+const getDefaultForm = (businessType) => {
+  const base = {
+    name: "",
+    sku: "",
+    supplier: "",
+    wholesalePrice: "",
+    retailPrice: "",
+    quantity: "",
+    lowStockThreshold: 5,
+    entryDate: "",
+    expiryDate: "",
+  };
+
+  switch (businessType) {
+    case "restaurant":
+      return {
+        ...base,
+        category: "ingredient",
+        unit: "kg",
+        storageLocation: "",
+      };
+
+    case "pharmacy":
+      return {
+        ...base,
+        category: "medicine",
+        unit: "box",
+        batchNumber: "",
+      };
+
+    case "wholesale":
+      return {
+        ...base,
+        category: "bulk",
+        unit: "carton",
+        minimumOrder: "",
+      };
+
+    default:
+      return {
+        ...base,
+        category: "general",
+        unit: "pcs",
+      };
+  }
 };
 
 const Inventory = () => {
+  const { businessType } = useBusiness();
+
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [showModal, setShowModal] = useState(false);
   const [editingItem, setEditingItem] = useState(null);
-  const [formData, setFormData] = useState(DEFAULT_FORM);
+  const [formData, setFormData] = useState(getDefaultForm(businessType));
 
   const [toast, setToast] = useState(null);
   const [search, setSearch] = useState("");
 
   /* =====================================================
-     Fetch inventory (branch-scoped by backend)
+     Reset form when business type changes
+  ===================================================== */
+  useEffect(() => {
+    setFormData(getDefaultForm(businessType));
+  }, [businessType]);
+
+  /* =====================================================
+     Fetch Inventory (Hybrid-safe)
   ===================================================== */
   const fetchItems = async () => {
     try {
@@ -62,24 +105,37 @@ const Inventory = () => {
   }, []);
 
   /* =====================================================
-     Derived Data
+     Business-aware Search
   ===================================================== */
   const filteredItems = useMemo(() => {
     if (!search) return items;
+
     return items.filter((i) =>
-      `${i.name} ${i.sku || ""}`
+      `
+      ${i.name}
+      ${i.sku || ""}
+      ${i.batchNumber || ""}
+      ${i.storageLocation || ""}
+      `
         .toLowerCase()
         .includes(search.toLowerCase())
     );
   }, [search, items]);
 
+  /* =====================================================
+     Stats (Hybrid safe numeric parsing)
+  ===================================================== */
   const stats = useMemo(() => {
     return items.reduce(
       (acc, i) => {
-        acc.totalStock += Number(i.quantity);
-        acc.totalValue += i.quantity * i.retailPrice;
-        acc.totalProfit +=
-          i.quantity * (i.retailPrice - i.wholesalePrice);
+        const qty = Number(i.quantity || 0);
+        const retail = Number(i.retailPrice || 0);
+        const wholesale = Number(i.wholesalePrice || 0);
+
+        acc.totalStock += qty;
+        acc.totalValue += qty * retail;
+        acc.totalProfit += qty * (retail - wholesale);
+
         return acc;
       },
       { totalStock: 0, totalValue: 0, totalProfit: 0 }
@@ -90,23 +146,28 @@ const Inventory = () => {
     Number(item.quantity) <= Number(item.lowStockThreshold || 5);
 
   /* =====================================================
-     Create / Update Item
+     Save Item
   ===================================================== */
   const handleSubmit = async (e) => {
     e.preventDefault();
 
     try {
+      const payload = {
+        ...formData,
+        businessType, // 🔥 important for hybrid sync
+      };
+
       if (editingItem) {
-        await api(`/api/items/${editingItem._id}`, "PUT", formData);
+        await api(`/api/items/${editingItem._id}`, "PUT", payload);
         setToast({ message: "Item updated successfully", type: "success" });
       } else {
-        await api("/api/items", "POST", formData);
+        await api("/api/items", "POST", payload);
         setToast({ message: "Item added successfully", type: "success" });
       }
 
       setShowModal(false);
       setEditingItem(null);
-      setFormData(DEFAULT_FORM);
+      setFormData(getDefaultForm(businessType));
       fetchItems();
     } catch (err) {
       console.error(err);
@@ -122,6 +183,7 @@ const Inventory = () => {
   ===================================================== */
   const handleDelete = async (id) => {
     if (!window.confirm("Delete this item permanently?")) return;
+
     try {
       await api(`/api/items/${id}`, "DELETE");
       setToast({ message: "Item deleted", type: "warning" });
@@ -141,13 +203,13 @@ const Inventory = () => {
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Package className="text-blue-600" />
-          Inventory
+          Inventory ({businessType})
         </h1>
 
         <button
           onClick={() => {
             setEditingItem(null);
-            setFormData(DEFAULT_FORM);
+            setFormData(getDefaultForm(businessType));
             setShowModal(true);
           }}
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
@@ -159,10 +221,7 @@ const Inventory = () => {
       {/* Stats */}
       <div className="grid sm:grid-cols-3 gap-4">
         <Stat label="Total Stock" value={stats.totalStock} />
-        <Stat
-          label="Stock Value"
-          value={`$${stats.totalValue.toFixed(2)}`}
-        />
+        <Stat label="Stock Value" value={`$${stats.totalValue.toFixed(2)}`} />
         <Stat
           label="Estimated Profit"
           value={`$${stats.totalProfit.toFixed(2)}`}
@@ -175,12 +234,12 @@ const Inventory = () => {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or SKU / barcode..."
+          placeholder="Search inventory..."
           className="w-full p-2 border rounded-md dark:bg-gray-800"
         />
       </div>
 
-      {/* Inventory Table */}
+      {/* Table */}
       <div className="overflow-x-auto bg-white dark:bg-gray-900 rounded-xl border">
         {loading ? (
           <div className="p-6 flex justify-center">
@@ -201,7 +260,9 @@ const Inventory = () => {
             </thead>
             <tbody>
               {filteredItems.map((i) => {
-                const profit = i.retailPrice - i.wholesalePrice;
+                const profit =
+                  Number(i.retailPrice) - Number(i.wholesalePrice);
+
                 return (
                   <tr
                     key={i._id}
@@ -213,19 +274,26 @@ const Inventory = () => {
                   >
                     <td className="p-3">
                       <div className="font-medium">{i.name}</div>
+
                       {i.sku && (
                         <div className="text-xs text-gray-500 flex items-center gap-1">
                           <Barcode size={12} /> {i.sku}
                         </div>
                       )}
+
+                      {i.batchNumber && (
+                        <div className="text-xs text-purple-500">
+                          Batch: {i.batchNumber}
+                        </div>
+                      )}
                     </td>
 
-                    <td className="p-3 flex items-center gap-1 justify-center">
+                    <td className="p-3 text-center">
                       {i.quantity}
                       {isLowStock(i) && (
                         <AlertTriangle
                           size={14}
-                          className="text-red-500"
+                          className="text-red-500 inline ml-1"
                         />
                       )}
                     </td>
@@ -241,7 +309,7 @@ const Inventory = () => {
                       <button
                         onClick={() => {
                           setEditingItem(i);
-                          setFormData({ ...DEFAULT_FORM, ...i });
+                          setFormData({ ...getDefaultForm(businessType), ...i });
                           setShowModal(true);
                         }}
                         className="text-blue-600"
@@ -279,6 +347,7 @@ const Inventory = () => {
           setFormData={setFormData}
           onSubmit={handleSubmit}
           editing={!!editingItem}
+          businessType={businessType}
         />
       </Modal>
 
@@ -292,8 +361,9 @@ const Inventory = () => {
 };
 
 /* =====================================================
-   Reusable Components
+   Components
 ===================================================== */
+
 const Stat = ({ label, value }) => (
   <div className="bg-blue-100 dark:bg-blue-900/30 p-4 rounded-xl">
     <span className="text-sm">{label}</span>
@@ -301,23 +371,54 @@ const Stat = ({ label, value }) => (
   </div>
 );
 
-const InventoryForm = ({ formData, setFormData, onSubmit, editing }) => (
+const InventoryForm = ({
+  formData,
+  setFormData,
+  onSubmit,
+  editing,
+  businessType,
+}) => (
   <form onSubmit={onSubmit} className="space-y-3">
-    {[
-      ["name", "Item name"],
-      ["sku", "SKU / Barcode"],
-      ["supplier", "Supplier"],
-    ].map(([k, p]) => (
+    <input
+      value={formData.name}
+      onChange={(e) =>
+        setFormData({ ...formData, name: e.target.value })
+      }
+      placeholder="Item name"
+      className="w-full p-2 border rounded-md"
+      required
+    />
+
+    <input
+      value={formData.sku}
+      onChange={(e) =>
+        setFormData({ ...formData, sku: e.target.value })
+      }
+      placeholder="SKU / Barcode"
+      className="w-full p-2 border rounded-md"
+    />
+
+    {businessType === "pharmacy" && (
       <input
-        key={k}
-        value={formData[k]}
+        value={formData.batchNumber || ""}
         onChange={(e) =>
-          setFormData({ ...formData, [k]: e.target.value })
+          setFormData({ ...formData, batchNumber: e.target.value })
         }
-        placeholder={p}
+        placeholder="Batch Number"
         className="w-full p-2 border rounded-md"
       />
-    ))}
+    )}
+
+    {businessType === "restaurant" && (
+      <input
+        value={formData.storageLocation || ""}
+        onChange={(e) =>
+          setFormData({ ...formData, storageLocation: e.target.value })
+        }
+        placeholder="Storage Location"
+        className="w-full p-2 border rounded-md"
+      />
+    )}
 
     <div className="grid grid-cols-2 gap-3">
       <input
@@ -325,17 +426,24 @@ const InventoryForm = ({ formData, setFormData, onSubmit, editing }) => (
         placeholder="Wholesale price"
         value={formData.wholesalePrice}
         onChange={(e) =>
-          setFormData({ ...formData, wholesalePrice: e.target.value })
+          setFormData({
+            ...formData,
+            wholesalePrice: e.target.value,
+          })
         }
         className="p-2 border rounded-md"
         required
       />
+
       <input
         type="number"
         placeholder="Retail price"
         value={formData.retailPrice}
         onChange={(e) =>
-          setFormData({ ...formData, retailPrice: e.target.value })
+          setFormData({
+            ...formData,
+            retailPrice: e.target.value,
+          })
         }
         className="p-2 border rounded-md"
         required
@@ -353,6 +461,7 @@ const InventoryForm = ({ formData, setFormData, onSubmit, editing }) => (
         className="p-2 border rounded-md"
         required
       />
+
       <input
         type="number"
         placeholder="Low stock alert"
@@ -362,26 +471,6 @@ const InventoryForm = ({ formData, setFormData, onSubmit, editing }) => (
             ...formData,
             lowStockThreshold: e.target.value,
           })
-        }
-        className="p-2 border rounded-md"
-      />
-    </div>
-
-    <div className="grid grid-cols-2 gap-3">
-      <input
-        type="date"
-        value={formData.entryDate}
-        onChange={(e) =>
-          setFormData({ ...formData, entryDate: e.target.value })
-        }
-        className="p-2 border rounded-md"
-        required
-      />
-      <input
-        type="date"
-        value={formData.expiryDate || ""}
-        onChange={(e) =>
-          setFormData({ ...formData, expiryDate: e.target.value })
         }
         className="p-2 border rounded-md"
       />

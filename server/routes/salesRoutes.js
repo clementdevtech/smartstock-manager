@@ -12,14 +12,14 @@ const {
 
 // Protected routes
 router.route('/')
-  .get(protect, getSales)        // Get all sales (with filters or pagination)
-  .post(protect, createSale);    // Create a new sale
+  .get(protect, getSales)
+  .post(protect, createSale);
 
 router.route('/summary/daily')
-  .get(protect, getDailySummary); // Get daily report for dashboard
+  .get(protect, getDailySummary);
 
 router.route('/:id')
-  .get(protect, getSaleById)      // Get one sale
-  .delete(protect, deleteSale);   // Delete a sale
+  .get(protect, getSaleById)
+  .delete(protect, deleteSale);
 
 module.exports = router;

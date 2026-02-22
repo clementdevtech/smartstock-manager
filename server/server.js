@@ -4,12 +4,11 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
-/* =====================================================
-   IMPORTS
-===================================================== */
 const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const { connectDB, dbStatus } = require("./config/db");
 const syncOfflineSales = require("./sync/syncSales");
@@ -17,14 +16,14 @@ const syncOfflineLogos = require("./sync/syncOfflineLogos");
 const { syncPendingItems } = require("./sync/syncPendingItems");
 
 /* =====================================================
-   🧠 ENV / MODE DETECTION (pkg + Electron safe)
+   🧠 MODE DETECTION
 ===================================================== */
 const isElectron =
   !!process.versions.electron ||
   process.argv.some(arg => arg.toLowerCase().includes("electron"));
 
 /* =====================================================
-   🗂️ APP DATA DIR (WRITABLE & SAFE)
+   🗂️ APP DATA DIR
 ===================================================== */
 const APP_DATA =
   process.env.APP_DATA ||
@@ -58,40 +57,36 @@ app.use(
   morgan(process.env.NODE_ENV === "production" ? "combined" : "dev")
 );
 
-/* =====================================================
-   ROUTES (FULL SYSTEM)
-===================================================== */
+if (!isElectron) {
+  app.use(helmet());
+  app.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: 500
+    })
+  );
+}
 
-/* 🔐 AUTH & USERS */
+/* =====================================================
+   ROUTES
+===================================================== */
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/users", require("./routes/userRoutes"));
 app.use("/api/upload", require("./routes/upload"));
-
-/* 🏪 CORE POS */
 app.use("/api/items", require("./routes/inventoryRoutes"));
 app.use("/api/sales", require("./routes/salesRoutes"));
-
-/* 👥 EMPLOYEES & PAYROLL */
 app.use("/api/employees", require("./routes/employeeRoutes"));
 app.use("/api/expenses", require("./routes/expenseRoutes"));
-
-/* 📊 REPORTING & ANALYTICS */
 app.use("/api/reports", require("./routes/reportRoutes"));
 app.use("/api/forecast", require("./routes/forecastRoutes"));
 app.use("/api/targets", require("./routes/targetRoutes"));
-
-/* 📂 CSV / EXPORTS */
 app.use("/api/csv", require("./routes/csvRoutes"));
-
-/* ⚙️ SETTINGS & ADMIN */
 app.use("/api/settings", require("./routes/settingsRoutes"));
 app.use("/api/keys", require("./routes/keyRoutes"));
-
-/* 💾 BACKUPS */
 app.use("/api/backup", require("./routes/backupRoutes"));
 
 /* =====================================================
-   ❤️ HEALTH CHECK (CRITICAL)
+   ❤️ HEALTH CHECK
 ===================================================== */
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -105,21 +100,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 /* =====================================================
-   🌍 STATIC CLIENT (WEB MODE ONLY)
-===================================================== */
-if (process.env.NODE_ENV === "production" && !isElectron) {
-  const clientBuildPath = path.join(__dirname, "..", "client", "dist");
-
-  if (fs.existsSync(clientBuildPath)) {
-    app.use(express.static(clientBuildPath));
-    app.get("*", (_, res) =>
-      res.sendFile(path.join(clientBuildPath, "index.html"))
-    );
-  }
-}
-
-/* =====================================================
-   ❌ GLOBAL ERROR HANDLER (NO CRASH EVER)
+   ❌ GLOBAL ERROR HANDLER
 ===================================================== */
 app.use((err, _req, res, _next) => {
   console.error("❌ Unhandled error:", err.stack || err);
@@ -130,7 +111,7 @@ app.use((err, _req, res, _next) => {
 });
 
 /* =====================================================
-   🚀 START SERVER
+   🚀 START SERVER (CRITICAL FIXED SECTION)
 ===================================================== */
 const PORT = Number(process.env.PORT) || 3333;
 const HOST = isElectron ? "127.0.0.1" : "0.0.0.0";
@@ -143,17 +124,34 @@ function start() {
   console.log("🧠 Mode:", isElectron ? "Electron" : "Web");
   console.log("🌐 Binding to:", HOST, PORT);
 
-  // 🔥 Non-blocking DB connect
-  connectDB();
-
+  // ✅ START SERVER FIRST (NO BLOCKING)
   server = app.listen(PORT, HOST, () => {
     console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
   });
 
-  // 🔁 Safe background sync
+  server.on("error", err => {
+    console.error("❌ Server failed to bind:", err);
+  });
+
+  // ✅ CONNECT DB IN BACKGROUND (NEVER BLOCK)
+  setImmediate(async () => {
+    try {
+      console.log("🔄 Connecting database...");
+      await connectDB();
+      console.log("✅ Database connection completed");
+    } catch (err) {
+      console.error("⚠️ DB connection failed. Running SQLite only.", err.message);
+    }
+  });
+
+  // ✅ SAFE BACKGROUND SYNC (CAN’T CRASH SERVER)
   auxSyncInterval = setInterval(() => {
-    syncOfflineLogos();
-    syncPendingItems();
+    try {
+      syncOfflineLogos();
+      syncPendingItems();
+    } catch (err) {
+      console.error("⚠️ Background sync error:", err.message);
+    }
   }, 30_000);
 
   syncOfflineSales().catch(() => {});
