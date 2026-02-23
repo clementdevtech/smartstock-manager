@@ -1,45 +1,55 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
-function hasSMTP() {
-  return !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+// Full debug: show env before initialization
+console.log("🔍 RESEND_API_KEY loaded:", process.env.RESEND_API_KEY);
+
+function hasResend() {
+  return !!process.env.RESEND_API_KEY;
 }
 
-let transporter = null;
+let resend = null;
 
-if (hasSMTP()) {
-  transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT) : 587,
-    secure: process.env.SMTP_SECURE === "true",
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
-
-  transporter
-    .verify()
-    .then(() => console.log("📧 SMTP transporter ready"))
-    .catch((err) => console.error("❌ SMTP transporter error:", err));
+if (hasResend()) {
+  try {
+    resend = new Resend(process.env.RESEND_API_KEY);
+    console.log("📧 Resend email service ready");
+  } catch (err) {
+    console.error("❌ Failed to initialize Resend:", err);
+  }
 } else {
-  console.log("⚠️ SMTP not configured — email disabled");
+  console.log(
+    "⚠️ RESEND_API_KEY not configured — email disabled",
+    process.env.RESEND_API_KEY
+  );
 }
 
 async function sendEmail(to, subject, html) {
-  if (!transporter) {
-    console.log("⚠️ Email skipped (SMTP not configured)");
+  console.log("🛠 sendEmail called with:");
+  console.log("  to:", to);
+  console.log("  subject:", subject);
+  console.log("  html length:", html.length);
+
+  if (!resend) {
+    console.log("⚠️ Email skipped (Resend not configured)");
     return null;
   }
 
-  const info = await transporter.sendMail({
-    from: `"SmartStock" <${process.env.SMTP_USER}>`,
-    to,
-    subject,
-    html,
-  });
+  try {
+    console.log("🌐 Sending email via Resend...");
+    const response = await resend.emails.send({
+      from: "SmartStock <noreply@netsafehub.com>",
+      to,
+      subject,
+      html,
+    });
 
-  console.log(`📩 Email sent to ${to}: ${info.messageId}`);
-  return info;
+    console.log("✅ Resend response received:", response.data);
+    return response;
+  } catch (err) {
+    console.error("❌ Resend email error:", err);
+    if (err.response) console.error("  API response:", err.response.data);
+    throw err;
+  }
 }
 
 module.exports = sendEmail;

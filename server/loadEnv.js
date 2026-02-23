@@ -54,6 +54,7 @@ SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=smartstockapplications@gmail.com
 SMTP_PASS=hdca rhfj qrsl dlpq
+RESEND_API_KEY=re_9ApzPjgs_J52ArSDqn9Pav4zm7LFmkUvS
 
 # cloudinary config
 CLOUDINARY_CLOUD_NAME=dnfsojfku
