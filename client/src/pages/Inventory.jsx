@@ -13,6 +13,7 @@ import Modal from "../components/Modal";
 import Toast from "../components/Toast";
 import { api } from "../utils/api";
 import { useBusiness } from "../context/BusinessContext";
+import CameraScanner from "../components/CameraScanner";
 
 /* =====================================================
    Dynamic Default Form Based On Business Type
@@ -76,6 +77,10 @@ const Inventory = () => {
 
   const [toast, setToast] = useState(null);
   const [search, setSearch] = useState("");
+  const [showScanner, setShowScanner] = useState(false);
+
+  const storeId = localStorage.getItem("storeId"); 
+  console.log("Current store ID:", storeId);
 
   /* =====================================================
      Reset form when business type changes
@@ -148,35 +153,135 @@ const Inventory = () => {
   /* =====================================================
      Save Item
   ===================================================== */
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+const handleSubmit = async (e) => {
+  e.preventDefault();
 
-    try {
-      const payload = {
-        ...formData,
-        businessType, // 🔥 important for hybrid sync
-      };
+  try {
+    /* ================================
+       ENTERPRISE VALIDATION
+    ================================= */
 
-      if (editingItem) {
-        await api(`/api/items/${editingItem._id}`, "PUT", payload);
-        setToast({ message: "Item updated successfully", type: "success" });
-      } else {
-        await api("/api/items", "POST", payload);
-        setToast({ message: "Item added successfully", type: "success" });
-      }
-
-      setShowModal(false);
-      setEditingItem(null);
-      setFormData(getDefaultForm(businessType));
-      fetchItems();
-    } catch (err) {
-      console.error(err);
-      setToast({
-        message: err.message || "Failed to save item",
+    if (!storeId) {
+      return setToast({
+        message: "Store not configured. Please select a store.",
         type: "error",
       });
     }
-  };
+
+    if (Number(formData.wholesalePrice) < 0)
+      return setToast({ message: "Wholesale price cannot be negative", type: "error" });
+
+    if (Number(formData.retailPrice) < 0)
+      return setToast({ message: "Retail price cannot be negative", type: "error" });
+
+    if (Number(formData.quantity) < 0)
+      return setToast({ message: "Quantity cannot be negative", type: "error" });
+
+    /* ================================
+       DUPLICATE SKU PROTECTION
+    ================================= */
+
+    if (formData.sku) {
+      const duplicate = items.find(
+        (i) =>
+          i.sku === formData.sku &&
+          i._id !== editingItem?._id &&
+          i.storeId === storeId
+      );
+
+      if (duplicate) {
+        return setToast({
+          message: "This barcode already exists in this store",
+          type: "error",
+        });
+      }
+    }
+
+    /* ================================
+       NORMALIZE NUMBERS
+    ================================= */
+
+    const payload = {
+      ...formData,
+      wholesalePrice: Number(formData.wholesalePrice),
+      retailPrice: Number(formData.retailPrice),
+      quantity: Number(formData.quantity),
+      lowStockThreshold: Number(formData.lowStockThreshold || 0),
+      businessType,
+      storeId,
+    };
+
+    /* ================================
+       SAVE ITEM
+    ================================= */
+
+    let savedItem;
+
+    if (editingItem) {
+      savedItem = await api(`/api/items/${editingItem._id}`, "PUT", payload);
+
+      setToast({
+        message: "Item updated successfully",
+        type: "success",
+      });
+
+      /* OPTIMISTIC UPDATE */
+      setItems((prev) =>
+        prev.map((i) =>
+          i._id === editingItem._id ? { ...i, ...payload } : i
+        )
+      );
+    } else {
+      savedItem = await api("/api/items", "POST", payload);
+
+      setToast({
+        message: "Item added successfully",
+        type: "success",
+      });
+
+      /* OPTIMISTIC INSERT */
+      setItems((prev) => [
+        savedItem || { _id: crypto.randomUUID(), ...payload },
+        ...prev,
+      ]);
+    }
+
+    /* ================================
+       STOCK MOVEMENT AUDIT LOG
+    ================================= */
+/*
+    try {
+      await api("/api/items/stock-movements", "POST", {
+        productId: savedItem?._id || editingItem?._id,
+        quantity: payload.quantity,
+        type: editingItem ? "adjustment" : "initial_stock",
+        storeId,
+        reference: editingItem ? "manual update" : "item creation",
+      });
+    } catch (auditErr) {
+      console.warn("Stock movement log failed:", auditErr.message);
+    }*/
+
+    /* ================================
+       RESET FORM
+    ================================= */
+
+    setShowModal(false);
+    setEditingItem(null);
+    setFormData(getDefaultForm(businessType));
+
+    /* OPTIONAL background sync */
+    fetchItems();
+
+  } catch (err) {
+    console.error("SAVE ITEM ERROR:", err);
+
+    setToast({
+      message: err?.message || "Failed to save item",
+      type: "error",
+    });
+  }
+};
 
   /* =====================================================
      Delete Item
@@ -348,6 +453,8 @@ const Inventory = () => {
           onSubmit={handleSubmit}
           editing={!!editingItem}
           businessType={businessType}
+          showScanner={showScanner}
+          setShowScanner={setShowScanner}
         />
       </Modal>
 
@@ -372,23 +479,32 @@ const Stat = ({ label, value }) => (
 );
 
 const InventoryForm = ({
-  formData,
-  setFormData,
-  onSubmit,
-  editing,
-  businessType,
+formData,
+setFormData,
+onSubmit,
+editing,
+businessType,
+showScanner,
+setShowScanner,
 }) => (
-  <form onSubmit={onSubmit} className="space-y-3">
-    <input
-      value={formData.name}
-      onChange={(e) =>
-        setFormData({ ...formData, name: e.target.value })
-      }
-      placeholder="Item name"
-      className="w-full p-2 border rounded-md"
-      required
-    />
 
+  <form onSubmit={onSubmit} className="space-y-3">
+
+
+{/* Item Name */}
+<input
+  value={formData.name}
+  onChange={(e) =>
+    setFormData({ ...formData, name: e.target.value })
+  }
+  placeholder="Item name"
+  className="w-full p-2 border rounded-md"
+  required
+/>
+
+{/* SKU + Scanner */}
+<div className="space-y-2">
+  <div className="flex gap-2">
     <input
       value={formData.sku}
       onChange={(e) =>
@@ -398,88 +514,124 @@ const InventoryForm = ({
       className="w-full p-2 border rounded-md"
     />
 
-    {businessType === "pharmacy" && (
-      <input
-        value={formData.batchNumber || ""}
-        onChange={(e) =>
-          setFormData({ ...formData, batchNumber: e.target.value })
-        }
-        placeholder="Batch Number"
-        className="w-full p-2 border rounded-md"
-      />
-    )}
-
-    {businessType === "restaurant" && (
-      <input
-        value={formData.storageLocation || ""}
-        onChange={(e) =>
-          setFormData({ ...formData, storageLocation: e.target.value })
-        }
-        placeholder="Storage Location"
-        className="w-full p-2 border rounded-md"
-      />
-    )}
-
-    <div className="grid grid-cols-2 gap-3">
-      <input
-        type="number"
-        placeholder="Wholesale price"
-        value={formData.wholesalePrice}
-        onChange={(e) =>
-          setFormData({
-            ...formData,
-            wholesalePrice: e.target.value,
-          })
-        }
-        className="p-2 border rounded-md"
-        required
-      />
-
-      <input
-        type="number"
-        placeholder="Retail price"
-        value={formData.retailPrice}
-        onChange={(e) =>
-          setFormData({
-            ...formData,
-            retailPrice: e.target.value,
-          })
-        }
-        className="p-2 border rounded-md"
-        required
-      />
-    </div>
-
-    <div className="grid grid-cols-2 gap-3">
-      <input
-        type="number"
-        placeholder="Quantity"
-        value={formData.quantity}
-        onChange={(e) =>
-          setFormData({ ...formData, quantity: e.target.value })
-        }
-        className="p-2 border rounded-md"
-        required
-      />
-
-      <input
-        type="number"
-        placeholder="Low stock alert"
-        value={formData.lowStockThreshold}
-        onChange={(e) =>
-          setFormData({
-            ...formData,
-            lowStockThreshold: e.target.value,
-          })
-        }
-        className="p-2 border rounded-md"
-      />
-    </div>
-
-    <button className="w-full bg-blue-600 text-white py-2 rounded-md">
-      {editing ? "Update Item" : "Save Item"}
+    <button
+      type="button"
+      onClick={() => setShowScanner(true)}
+      className="px-4 bg-gray-200 hover:bg-gray-300 rounded-md font-medium"
+    >
+      Scan
     </button>
+  </div>
+
+  {/* Camera Scanner */}
+  {showScanner && (
+    <div className="space-y-2 border rounded-lg p-2 bg-black/5">
+      <CameraScanner
+        onDetected={(code, product) => {
+           setFormData({
+               ...formData,
+                 sku: code,
+           name: product?.name || formData.name,
+         });
+      }}
+     onClose={() => setShowScanner(false)}
+   />
+
+
+      
+    </div>
+  )}
+</div>
+
+{/* Pharmacy */}
+{businessType === "pharmacy" && (
+  <input
+    value={formData.batchNumber || ""}
+    onChange={(e) =>
+      setFormData({ ...formData, batchNumber: e.target.value })
+    }
+    placeholder="Batch Number"
+    className="w-full p-2 border rounded-md"
+  />
+)}
+
+{/* Restaurant */}
+{businessType === "restaurant" && (
+  <input
+    value={formData.storageLocation || ""}
+    onChange={(e) =>
+      setFormData({ ...formData, storageLocation: e.target.value })
+    }
+    placeholder="Storage Location"
+    className="w-full p-2 border rounded-md"
+  />
+)}
+
+{/* Prices */}
+<div className="grid grid-cols-2 gap-3">
+  <input
+    type="number"
+    placeholder="Wholesale price"
+    value={formData.wholesalePrice}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        wholesalePrice: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+    required
+  />
+
+  <input
+    type="number"
+    placeholder="Retail price"
+    value={formData.retailPrice}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        retailPrice: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+    required
+  />
+</div>
+
+{/* Quantity */}
+<div className="grid grid-cols-2 gap-3">
+  <input
+    type="number"
+    placeholder="Quantity"
+    value={formData.quantity}
+    onChange={(e) =>
+      setFormData({ ...formData, quantity: e.target.value })
+    }
+    className="p-2 border rounded-md"
+    required
+  />
+
+  <input
+    type="number"
+    placeholder="Low stock alert"
+    value={formData.lowStockThreshold}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        lowStockThreshold: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+</div>
+
+{/* Submit */}
+<button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md font-medium">
+  {editing ? "Update Item" : "Save Item"}
+</button>
+
   </form>
 );
+
 
 export default Inventory;

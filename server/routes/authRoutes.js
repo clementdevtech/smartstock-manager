@@ -28,9 +28,7 @@ router.post("/register", auth.register);
 router.post("/login", auth.loginUser);
 
 //me 
-router.get("/me", protect, (req, res) => {
-  res.json(req.user);
-});
+router.get("/me", protect, auth.getMe);
 
 
 module.exports = router;

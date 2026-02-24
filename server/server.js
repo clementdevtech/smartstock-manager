@@ -84,6 +84,7 @@ app.use("/api/csv", require("./routes/csvRoutes"));
 app.use("/api/settings", require("./routes/settingsRoutes"));
 app.use("/api/keys", require("./routes/keyRoutes"));
 app.use("/api/backup", require("./routes/backupRoutes"));
+app.use("/api/admin", require("./routes/adminRoutes"));
 
 /* =====================================================
    ❤️ HEALTH CHECK

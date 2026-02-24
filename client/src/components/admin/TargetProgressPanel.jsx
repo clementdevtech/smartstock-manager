@@ -4,26 +4,36 @@ import { api } from "../../utils/api";
 export default function TargetProgressPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [offline, setOffline] = useState(false);
 
   useEffect(() => {
     const loadProgress = async () => {
-      try {
-        const res = await api("/reports/target-progress?period=daily");
-        setData(res);
-      } catch (err) {
-        console.error(err);
-        setError(err.message);
-      } finally {
+      const res = await api("/api/reports/target-progress?period=daily");
+
+      if (res?.offline) {
+        setOffline(true);
         setLoading(false);
+        return;
       }
+
+      setData(res);
+      setLoading(false);
     };
 
     loadProgress();
   }, []);
 
   if (loading) return null;
-  if (error) return null;
+
+  if (offline) {
+    return (
+      <div className="bg-gray-50 border border-dashed rounded-xl p-5 text-gray-500">
+        <h2 className="text-xl font-semibold mb-2">📊 Target Progress</h2>
+        <p className="text-sm">Reports unavailable (offline mode)</p>
+      </div>
+    );
+  }
+
   if (!data) return null;
 
   const color =

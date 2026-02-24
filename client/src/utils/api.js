@@ -1,5 +1,4 @@
-const API_BASE =
-  import.meta.env.VITE_API_URL;
+const API_BASE = import.meta.env.VITE_API_URL;
 
 export const api = async (url, method = "GET", body) => {
   const token =
@@ -14,9 +13,8 @@ export const api = async (url, method = "GET", body) => {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  // 🔒 Safely read response
   const text = await res.text();
-  let data;
+  let data = {};
 
   try {
     data = text ? JSON.parse(text) : {};
@@ -26,6 +24,15 @@ export const api = async (url, method = "GET", body) => {
     );
   }
 
+  // 🟡 OFFLINE / REPORTS UNAVAILABLE
+  if (res.status === 503) {
+    return {
+      offline: true,
+      message: data.message || "Reports unavailable (offline mode)",
+    };
+  }
+
+  // 🔴 REAL ERRORS
   if (!res.ok) {
     throw new Error(data.message || "API error");
   }

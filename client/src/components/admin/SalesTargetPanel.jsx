@@ -12,7 +12,7 @@ export default function SalesTargetPanel() {
     setError(null);
 
     try {
-      const res = await api("/targets/auto", "POST", { period });
+      const res = await api("/reports/auto", "POST", { period });
       setTarget(res);
     } catch (err) {
       console.error(err);

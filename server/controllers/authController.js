@@ -9,13 +9,21 @@ const sendEmail = require("../utils/email");
 /* =====================================================
    🔐 HELPERS
 ===================================================== */
-const generateToken = (user) =>
-  jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+const generateToken = (user) => {
+  const payload = {
+    id: user.id,
+    role: user.role
+  };
 
+  // Only include storeId if it exists
+  if (user.storeId) {
+    payload.storeId = user.storeId;
+  }
+
+  return jwt.sign(payload, process.env.JWT_SECRET, {
+    expiresIn: "7d"
+  });
+};
 
 
 /* =====================================================
@@ -260,7 +268,7 @@ exports.register = async (req, res) => {
     /* =====================================================
        🥇 FIRST ADMIN → POSTGRES ONLY
     ===================================================== */
-    if (Admin == "true") {
+    if (Admin === true || Admin === "true") {
       if (!productKey) {
         return res.status(400).json({ message: "Product key required" });
       }
@@ -320,11 +328,17 @@ exports.register = async (req, res) => {
       );
 
       return res.json({
-        user: adminUser,
-        role: "admin",
-        token: generateToken(adminUser)
-      });
-    }
+          user: {
+             ...adminUser,
+                  storeId
+             },
+               role: "admin",
+               token: generateToken({
+                   ...adminUser,
+                   storeId
+                })
+        });
+      }
 
     /* =====================================================
        👤 NORMAL USER
@@ -368,7 +382,14 @@ exports.loginUser = async (req, res) => {
        1️⃣ POSTGRES FIRST (ADMINS ONLY)
     ===================================================== */
     const pg = await query(
-      `SELECT * FROM users WHERE email = $1`,
+      `
+      SELECT 
+        u.*,
+        s.id AS store_id
+      FROM users u
+      LEFT JOIN stores s ON s.admin_id = u.id
+      WHERE u.email = $1
+      `,
       [email]
     );
 
@@ -380,17 +401,37 @@ exports.loginUser = async (req, res) => {
         return res.status(400).json({ message: "Invalid credentials" });
       }
 
-      // 🚫 Admins NEVER allowed to exist locally
-      return res.json({
-        user,
+      // 🔥 SELF-HEAL: Auto-create store if missing
+      if (!user.store_id && user.role === "admin") {
+        const storeResult = await query(
+          `
+          INSERT INTO stores (name, admin_id)
+          VALUES ($1, $2)
+          RETURNING id
+          `,
+          [user.name, user.id]
+        );
+
+        user.store_id = storeResult.rows[0].id;
+      }
+
+      const userWithStore = {
+        id: user.id,
+        email: user.email,
         role: user.role,
-        token: generateToken(user)
+        storeId: user.store_id
+      };
+
+      return res.json({
+        user: userWithStore,
+        role: user.role,
+        token: generateToken(userWithStore)
       });
     }
 
     /* =====================================================
        2️⃣ SQLITE FALLBACK (LOCAL USERS ONLY)
-       🚫 ADMINS BLOCKED HERE
+       🚫 NO STORE ID
     ===================================================== */
     const local = db.get(
       `SELECT * FROM local_users WHERE email = ?`,
@@ -401,7 +442,7 @@ exports.loginUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    // 🔒 HARD BLOCK: local user can NEVER be admin
+    // 🔒 Hard block: local cannot be admin
     if (local.role && local.role !== "user") {
       return res.status(403).json({
         message: "Invalid user type"
@@ -413,18 +454,17 @@ exports.loginUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
+    // ✅ NO storeId for local users
     const user = {
       id: local.id,
       email: local.email,
-      role: "user",
-      storeName: local.storeName,
-      storeId: local.storeId
+      role: "user"
     };
 
     return res.json({
       user,
       role: "user",
-      token: generateToken(user)
+      token: generateToken(user) // storeId will be undefined
     });
 
   } catch (err) {
@@ -433,6 +473,31 @@ exports.loginUser = async (req, res) => {
   }
 };
 
+/* =====================================================
+   9️⃣ GET CURRENT USER (ME)
+===================================================== */ 
+exports.getMe = async (req, res) => {
+  const userId = req.user.id;
+
+  const result = await query(
+    `
+    SELECT 
+      u.*,
+      s.id AS store_id
+    FROM users u
+    LEFT JOIN stores s ON s.admin_id = u.id
+    WHERE u.id = $1
+    `,
+    [userId]
+  );
+
+  const user = result.rows[0];
+
+  res.json({
+    ...user,
+    storeId: user.store_id
+  });
+};
 
 /* =====================================================
    9️⃣ REQUEST PASSWORD RESET

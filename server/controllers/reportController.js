@@ -1,5 +1,5 @@
 const asyncHandler = require("express-async-handler");
-const { pool } = require("../config/db");
+const { query } = require("../config/db");
 const { Parser } = require("json2csv");
 
 /* =====================================================
@@ -9,28 +9,36 @@ exports.balanceSheet = asyncHandler(async (req, res) => {
   const { from, to } = req.query;
   const { id: admin_id } = req.user;
 
-  const sales = await pool.query(
-    `
-    SELECT
-      COALESCE(SUM(total_amount),0) AS revenue,
-      COALESCE(SUM(total_profit),0) AS profit
-    FROM sales
-    WHERE admin_id=$1
-      AND sale_date BETWEEN $2 AND $3
-    `,
-    [admin_id, from, to]
-  );
+  let sales, expenses;
 
-  const expenses = await pool.query(
-    `
-    SELECT
-      COALESCE(SUM(amount),0) AS expenses
-    FROM expenses
-    WHERE admin_id=$1
-      AND pay_date BETWEEN $2 AND $3
-    `,
-    [admin_id, from, to]
-  );
+  try {
+    sales = await query(
+      `
+      SELECT
+        COALESCE(SUM(total_amount),0) AS revenue,
+        COALESCE(SUM(total_profit),0) AS profit
+      FROM sales
+      WHERE admin_id=$1
+        AND sale_date BETWEEN $2 AND $3
+      `,
+      [admin_id, from, to]
+    );
+
+    expenses = await query(
+      `
+      SELECT
+        COALESCE(SUM(amount),0) AS expenses
+      FROM expenses
+      WHERE admin_id=$1
+        AND pay_date BETWEEN $2 AND $3
+      `,
+      [admin_id, from, to]
+    );
+  } catch (err) {
+    return res.status(503).json({
+      message: "Balance sheet unavailable (offline mode)",
+    });
+  }
 
   const revenue = Number(sales.rows[0].revenue);
   const profit = Number(sales.rows[0].profit);
@@ -50,17 +58,28 @@ exports.balanceSheet = asyncHandler(async (req, res) => {
 exports.cashVsCredit = asyncHandler(async (req, res) => {
   const { id: admin_id } = req.user;
 
-  const result = await pool.query(
-    `
-    SELECT
-      payment_status,
-      SUM(total_amount) total
-    FROM sales
-    WHERE admin_id=$1
-    GROUP BY payment_status
-    `,
-    [admin_id]
-  );
+  let result;
+
+  try {
+    result = await query(
+      `
+      SELECT
+        payment_status,
+        SUM(total_amount) AS total
+      FROM sales
+      WHERE admin_id=$1
+      GROUP BY payment_status
+      `,
+      [admin_id]
+    );
+  } catch (err) {
+    return res.status(503).json({
+      paid: 0,
+      credit: 0,
+      pending: 0,
+      offline: true,
+    });
+  }
 
   const data = {
     paid: 0,
@@ -81,20 +100,25 @@ exports.cashVsCredit = asyncHandler(async (req, res) => {
 exports.employeeExpenseReport = asyncHandler(async (req, res) => {
   const { id: admin_id } = req.user;
 
-  const result = await pool.query(
-    `
-    SELECT
-      e.full_name,
-      ex.expense_type,
-      SUM(ex.amount) total_paid,
-      MAX(ex.advance_balance) remaining_advance
-    FROM expenses ex
-    LEFT JOIN employees e ON e.id = ex.employee_id
-    WHERE ex.admin_id=$1
-    GROUP BY e.full_name, ex.expense_type
-    `,
-    [admin_id]
-  );
+  let result;
+  try {
+    result = await query(
+      `
+      SELECT
+        e.full_name,
+        ex.expense_type,
+        SUM(ex.amount) AS total_paid,
+        MAX(ex.advance_balance) AS remaining_advance
+      FROM expenses ex
+      LEFT JOIN employees e ON e.id = ex.employee_id
+      WHERE ex.admin_id=$1
+      GROUP BY e.full_name, ex.expense_type
+      `,
+      [admin_id]
+    );
+  } catch (err) {
+    return res.status(503).json([]);
+  }
 
   res.json(result.rows);
 });
@@ -106,32 +130,53 @@ exports.targetProgress = asyncHandler(async (req, res) => {
   const { period } = req.query;
   const { id: admin_id } = req.user;
 
-  const targetRes = await pool.query(
-    `
-    SELECT target_amount
-    FROM sales_targets
-    WHERE admin_id=$1 AND period=$2
-    ORDER BY generated_at DESC
-    LIMIT 1
-    `,
-    [admin_id, period]
-  );
-
-  if (!targetRes.rows.length) {
-    return res.json({ message: "No target set" });
+  let interval;
+  if (period === "daily") interval = "1 day";
+  else if (period === "weekly") interval = "7 days";
+  else if (period === "monthly") interval = "1 month";
+  else {
+    res.status(400);
+    throw new Error("Invalid period");
   }
 
-  const actualRes = await pool.query(
+  let targetRes;
+  try {
+    targetRes = await query(
+      `
+      SELECT target_amount
+      FROM sales_targets
+      WHERE admin_id=$1 AND period=$2
+      ORDER BY generated_at DESC
+      LIMIT 1
+      `,
+      [admin_id, period]
+    );
+  } catch (err) {
+    return res.status(503).json({
+      message: "Reports unavailable (offline mode)",
+    });
+  }
+
+  if (!targetRes.rows.length) {
+    return res.json({
+      actual: 0,
+      target: 0,
+      percent: 0,
+      status: "no-target",
+    });
+  }
+
+  const actualRes = await query(
     `
-    SELECT SUM(total_amount) total
+    SELECT COALESCE(SUM(total_amount),0) total
     FROM sales
     WHERE admin_id=$1
-      AND DATE(created_at) >= CURRENT_DATE - INTERVAL '1 ${period}'
+      AND created_at >= CURRENT_DATE - INTERVAL '${interval}'
     `,
     [admin_id]
   );
 
-  const actual = Number(actualRes.rows[0].total || 0);
+  const actual = Number(actualRes.rows[0].total);
   const target = Number(targetRes.rows[0].target_amount);
   const percent = Math.min((actual / target) * 100, 100);
 
@@ -140,8 +185,11 @@ exports.targetProgress = asyncHandler(async (req, res) => {
     target,
     percent: Math.round(percent),
     status:
-      percent >= 100 ? "achieved" :
-      percent >= 80 ? "on-track" : "behind",
+      percent >= 100
+        ? "achieved"
+        : percent >= 80
+        ? "on-track"
+        : "behind",
   });
 });
 
@@ -151,19 +199,24 @@ exports.targetProgress = asyncHandler(async (req, res) => {
 exports.forecast = asyncHandler(async (req, res) => {
   const { id: admin_id } = req.user;
 
-  const history = await pool.query(
-    `
-    SELECT
-      DATE_TRUNC('month', sale_date) month,
-      SUM(total_amount) total
-    FROM sales
-    WHERE admin_id=$1
-    GROUP BY month
-    ORDER BY month DESC
-    LIMIT 6
-    `,
-    [admin_id]
-  );
+  let history;
+  try {
+    history = await query(
+      `
+      SELECT
+        DATE_TRUNC('month', sale_date) AS month,
+        SUM(total_amount) AS total
+      FROM sales
+      WHERE admin_id=$1
+      GROUP BY month
+      ORDER BY month DESC
+      LIMIT 6
+      `,
+      [admin_id]
+    );
+  } catch (err) {
+    return res.status(503).json([]);
+  }
 
   const avg =
     history.rows.reduce((a, b) => a + Number(b.total), 0) /
@@ -171,7 +224,7 @@ exports.forecast = asyncHandler(async (req, res) => {
 
   const forecast = [1, 2, 3].map(m => ({
     month_offset: m,
-    expected_sales: Math.round(avg * (1 + m * 0.05)), // gentle growth
+    expected_sales: Math.round(avg * (1 + m * 0.05)),
   }));
 
   res.json(forecast);
@@ -185,41 +238,47 @@ exports.profitLeaks = asyncHandler(async (req, res) => {
 
   const leaks = [];
 
-  const lowMargin = await pool.query(
-    `
-    SELECT name, retail_price, wholesale_price
-    FROM items
-    WHERE admin_id=$1
-      AND retail_price < wholesale_price * 1.1
-    `,
-    [admin_id]
-  );
+  try {
+    const lowMargin = await query(
+      `
+      SELECT name, retail_price, wholesale_price
+      FROM items
+      WHERE admin_id=$1
+        AND retail_price < wholesale_price * 1.1
+      `,
+      [admin_id]
+    );
 
-  if (lowMargin.rows.length) {
-    leaks.push({
-      type: "LOW_MARGIN",
-      items: lowMargin.rows,
-    });
-  }
+    if (lowMargin.rows.length) {
+      leaks.push({
+        type: "LOW_MARGIN",
+        items: lowMargin.rows,
+      });
+    }
 
-  const highExpenses = await pool.query(
-    `
-    SELECT expense_type, SUM(amount) total
-    FROM expenses
-    WHERE admin_id=$1
-    GROUP BY expense_type
-    HAVING SUM(amount) > 0.4 * (
-      SELECT SUM(total_profit) FROM sales WHERE admin_id=$1
-    )
-    `,
-    [admin_id]
-  );
+    const highExpenses = await query(
+      `
+      SELECT expense_type, SUM(amount) AS total
+      FROM expenses
+      WHERE admin_id=$1
+      GROUP BY expense_type
+      HAVING SUM(amount) > 0.4 * (
+        SELECT COALESCE(SUM(total_profit),0)
+        FROM sales
+        WHERE admin_id=$1
+      )
+      `,
+      [admin_id]
+    );
 
-  if (highExpenses.rows.length) {
-    leaks.push({
-      type: "HIGH_EXPENSE_RATIO",
-      expenses: highExpenses.rows,
-    });
+    if (highExpenses.rows.length) {
+      leaks.push({
+        type: "HIGH_EXPENSE_RATIO",
+        expenses: highExpenses.rows,
+      });
+    }
+  } catch (err) {
+    return res.status(503).json([]);
   }
 
   res.json(leaks);
@@ -232,16 +291,26 @@ exports.exportCSV = asyncHandler(async (req, res) => {
   const { table } = req.params;
   const { id: admin_id } = req.user;
 
-  const allowed = ["sales", "expenses", "employees"];
-  if (!allowed.includes(table)) {
+  const allowedTables = {
+    sales: "sales",
+    expenses: "expenses",
+    employees: "employees",
+  };
+
+  if (!allowedTables[table]) {
     res.status(400);
     throw new Error("Invalid export table");
   }
 
-  const result = await pool.query(
-    `SELECT * FROM ${table} WHERE admin_id=$1`,
-    [admin_id]
-  );
+  let result;
+  try {
+    result = await query(
+      `SELECT * FROM ${allowedTables[table]} WHERE admin_id=$1`,
+      [admin_id]
+    );
+  } catch (err) {
+    return res.status(503).json({ message: "Export unavailable offline" });
+  }
 
   const parser = new Parser();
   const csv = parser.parse(result.rows);

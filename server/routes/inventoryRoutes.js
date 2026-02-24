@@ -8,6 +8,7 @@ const {
   createItem,
   updateItem,
   deleteItem,
+  createStockMovement,
 } = require("../controllers/inventoryController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -31,6 +32,9 @@ router
   .get(protect, getItemById)
   .put(protect, updateItem)
   .delete(protect, deleteItem);
+
+
+router.post("/stock-movements", createStockMovement);
 
 module.exports = router;
 

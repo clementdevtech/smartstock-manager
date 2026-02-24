@@ -17,58 +17,67 @@ export const AuthProvider = ({ children }) => {
   /**
    * 🔁 Restore authentication on app load
    */
-  useEffect(() => {
-    const restoreAuth = async () => {
-      const token = getToken();
+useEffect(() => {
+  const restoreAuth = async () => {
+    const token = getToken();
 
-      if (!token) {
-        setUser(null);
-        setLoading(false);
-        return;
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const res = await api("/api/auth/me", "GET");
+
+      setUser(res);
+
+      /* ⭐ SAVE STORE ID */
+      if (res.storeId) {
+        localStorage.setItem("storeId", res.storeId);
       }
 
-      try {
-        /**
-         * ✅ Ask backend who this token belongs to
-         * (DO NOT trust localStorage blindly)
-         */
-        const res = await api("/api/auth/me", "GET");
-        
+    } catch (err) {
+      console.error("Auth restore failed:", err);
 
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      localStorage.removeItem("storeId"); // clear store too
+      sessionStorage.removeItem("token");
 
-        setUser(res);
-      } catch (err) {
-        console.error("Auth restore failed:", err);
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        // ❌ Invalid / expired token
-        localStorage.removeItem("token");
-        sessionStorage.removeItem("token");
-        setUser(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    restoreAuth();
-  }, []);
+  restoreAuth();
+}, []);
 
   /**
    * ✅ Login handler
    */
   const loginUser = (userData) => {
-    setUser(userData);
-    localStorage.setItem("user", JSON.stringify(userData));
-  };
+      setUser(userData);
+      
+      localStorage.setItem("user", JSON.stringify(userData));
+
+  /* ⭐ SAVE STORE */
+  if (userData.storeId) {
+    localStorage.setItem("storeId", userData.storeId);
+  }
+};
 
   /**
    * 🚪 Logout handler
    */
   const logoutUser = () => {
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
-    sessionStorage.removeItem("token");
-    setUser(null);
-  };
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  localStorage.removeItem("storeId"); // ⭐ important
+  sessionStorage.removeItem("token");
+  setUser(null);
+};
 
   return (
     <AuthContext.Provider

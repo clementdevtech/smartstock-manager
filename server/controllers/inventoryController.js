@@ -137,7 +137,15 @@ const getItemByBarcode = asyncHandler(async (req, res) => {
    CREATE ITEM (ENTERPRISE READY)
 ===================================================== */
 const createItem = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.body.storeId || req.user.storeId;
+
+  if (!storeId) {
+  res.status(400);
+  throw new Error("Store ID is required");
+}
+
+
   const data = req.body;
 
   sqlite.run(
@@ -179,41 +187,44 @@ const createItem = asyncHandler(async (req, res) => {
   );
 
   if (await isOnline()) {
-    const { rows } = await query(
-      `INSERT INTO items (
-        name, sku, barcode, category, item_type, unit,
-        allow_decimal_sales,
-        wholesale_price, retail_price,
-        quantity, low_stock_threshold,
-        track_batches, track_expiry, is_controlled,
-        supplier,
-        admin_id, store_id, created_by
-      )
-      VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
-      )
-      RETURNING *`,
-      [
-        data.name,
-        data.sku,
-        data.barcode || null,
-        data.category,
-        data.item_type || "product",
-        data.unit || "pcs",
-        data.allow_decimal_sales || false,
-        data.wholesale_price || 0,
-        data.retail_price || 0,
-        data.quantity || 0,
-        data.low_stock_threshold || 5,
-        data.track_batches || false,
-        data.track_expiry || false,
-        data.is_controlled || false,
-        data.supplier || {},
-        adminId,
-        storeId,
-        req.user.id,
-      ]
-    );
+  const { rows } = await query(
+  `INSERT INTO items (
+    name, sku, barcode, category, item_type, unit,
+    allow_decimal_sales,
+    wholesale_price, retail_price,
+    quantity, low_stock_threshold,
+    track_batches, track_expiry, is_controlled,
+    supplier,
+    entry_date,
+    admin_id, store_id, created_by
+  )
+  VALUES (
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+  )
+  RETURNING *`,
+  [
+    data.name,
+    data.sku,
+    data.barcode || null,
+    data.category,
+    data.item_type || "product",
+    data.unit || "pcs",
+    data.allow_decimal_sales || false,
+    data.wholesale_price || 0,
+    data.retail_price || 0,
+    data.quantity || 0,
+    data.low_stock_threshold || 5,
+    data.track_batches || false,
+    data.track_expiry || false,
+    data.is_controlled || false,
+    data.supplier || {},
+    data.entry_date || new Date(),   // 🔥 ADD THIS
+    adminId,
+    storeId,
+    req.user.id,
+  ]
+);
+
 
     sqlite.run(
       `UPDATE local_items
@@ -312,6 +323,48 @@ const getWeeklyBestItems = asyncHandler(async (req, res) => {
   res.json(rows);
 });
 
+
+/* =====================================================
+   CREATE STOCK MOVEMENT
+===================================================== */
+const createStockMovement = async (req, res) => {
+  try {
+    const { itemId, movementType, quantity, referenceId, notes } = req.body;
+
+    // Basic validation
+    if (!itemId || !movementType || quantity == null) {
+      return res.status(400).json({
+        error: "itemId, movementType and quantity are required",
+      });
+    }
+
+    await db.run(
+      `INSERT INTO stock_movements 
+       (itemId, movementType, quantity, referenceId, notes)
+       VALUES (?, ?, ?, ?, ?)`,
+      [
+        itemId,
+        movementType,
+        quantity,
+        referenceId || null,
+        notes || null,
+      ]
+    );
+
+    res.status(201).json({
+      success: true,
+      message: "Stock movement recorded successfully",
+    });
+
+  } catch (err) {
+    console.error("❌ Stock Movement Error:", err);
+    res.status(500).json({
+      error: "Failed to record stock movement",
+      details: err.message,
+    });
+  }
+};
+
 module.exports = {
   getItems,
   getItemById,
@@ -320,4 +373,5 @@ module.exports = {
   updateItem,
   deleteItem,
   getWeeklyBestItems,
+  createStockMovement,
 };
