@@ -90,21 +90,36 @@ html,body{
   white-space:pre-wrap;
 }
 
+.updateSection{
+  margin-top:14px;
+  text-align:center;
+  display:none;
+}
+
+.installBtn{
+  padding:10px 16px;
+  border-radius:12px;
+  border:none;
+  background:var(--accent);
+  color:white;
+  font-weight:600;
+  cursor:pointer;
+}
+
+.installBtn:hover{
+  box-shadow:0 6px 18px rgba(34,197,94,.4);
+}
+
 .ad{
   margin-top:12px;padding:10px 12px;
   border-radius:14px;
   border:1px solid rgba(255,255,255,.10);
   background:rgba(255,255,255,.04);
   cursor:pointer;
-  transition:all .2s ease;
 }
-.ad:hover{background:rgba(255,255,255,.08)}
-
-.ad .big{font-size:13px;font-weight:700;margin:0 0 4px}
-.ad .small{font-size:12px;margin:0;color:var(--muted)}
 
 .footer{
-  margin-top:10px;
+  margin-top:12px;
   display:flex;justify-content:space-between;
   font-size:11px;color:rgba(255,255,255,.45);
 }
@@ -145,13 +160,19 @@ html,body{
 <pre id="logBox">Preparing startup…</pre>
 </div>
 
+<div class="updateSection" id="updateSection">
+  <button class="installBtn" id="installBtn">
+    Install Update & Restart
+  </button>
+</div>
+
 <div class="ad" id="adBox">
-<p class="big" id="adTitle"></p>
-<p class="small" id="adText"></p>
+<p id="adTitle"></p>
+<p id="adText" style="font-size:12px;color:var(--muted)"></p>
 </div>
 
 <div class="footer">
-<span id="versionText">v1.0.0</span>
+<span id="versionText">v1.2.1</span>
 <span>SmartStock POS • Offline-first</span>
 </div>
 
@@ -164,27 +185,23 @@ const statusText=document.getElementById("statusText");
 const etaText=document.getElementById("etaText");
 const progressFill=document.getElementById("progressFill");
 const versionText=document.getElementById("versionText");
+const updateSection=document.getElementById("updateSection");
+const installBtn=document.getElementById("installBtn");
 
-let lastLines=[];
-const MAX_LINES=10;
-
-const MIN_VISIBLE_MS=3*60*1000;
-const MAX_VISIBLE_MS=5*60*1000;
+const MIN_VISIBLE_MS=15000;
+const MAX_VISIBLE_MS=120000;
 const startedAt=Date.now();
 
-let realMessagesStarted=false;
-let appReadySignalReceived=false;
+let appReady=false;
+let lastLines=[];
+const MAX_LINES=10;
 
 const idleLogs=[
 "Initializing offline storage…",
 "Loading product engine…",
-"Starting local services…",
 "Optimizing database…",
 "Preparing cashier module…",
-"Preparing inventory module…",
-"Loading receipts & printer support…",
 "Starting secure API layer…",
-"Checking system permissions…",
 "Finalizing startup…"
 ];
 
@@ -195,68 +212,56 @@ if(lastLines.length>MAX_LINES)lastLines.shift();
 logBox.textContent=lastLines.join("\n");
 }
 
+function computeProgress(){
+const elapsed=Date.now()-startedAt;
+const base=Math.min(80,(elapsed/MIN_VISIBLE_MS)*80);
+return base;
+}
+
 function setStatus(payload={}){
 if(payload.status)statusText.textContent=payload.status;
 if(typeof payload.progress==="number"){
-const pct=Math.max(0,Math.min(100,payload.progress));
-progressFill.style.width=pct+"%";
+progressFill.style.width=Math.min(payload.progress,100)+"%";
+}else{
+progressFill.style.width=computeProgress()+"%";
 }
-if(payload.log)appendLog(payload.log);
 if(payload.version)versionText.textContent=payload.version;
 }
 
-function computeProgress(){
-const elapsed=Date.now()-startedAt;
-if(elapsed<=MIN_VISIBLE_MS){
-return 6+(elapsed/MIN_VISIBLE_MS)*64;
-}else{
-const t=Math.min(1,(elapsed-MIN_VISIBLE_MS)/(MAX_VISIBLE_MS-MIN_VISIBLE_MS));
-return 70+t*25;
-}
-}
-
-function tryFinish(){
-const elapsed=Date.now()-startedAt;
-if(appReadySignalReceived && elapsed>=MIN_VISIBLE_MS){
-window.postMessage({type:"SPLASH_MIN_DONE"},"*");
-}
-if(elapsed>=MAX_VISIBLE_MS){
-window.postMessage({type:"SPLASH_FORCE_DONE"},"*");
-}
-}
-
 setInterval(()=>{
-const progress=computeProgress();
-if(!realMessagesStarted){
-setStatus({status:"Starting SmartStock services…",progress});
+if(!appReady){
+progressFill.style.width=computeProgress()+"%";
 }
-if(Math.random()<0.18){
+if(Math.random()<0.2){
 appendLog(idleLogs[Math.floor(Math.random()*idleLogs.length)]);
 }
 const remaining=Math.max(0,MAX_VISIBLE_MS-(Date.now()-startedAt));
-etaText.textContent=`Finishing in ${Math.ceil(remaining/1000)}s max`;
-tryFinish();
+etaText.textContent=`Max wait ${Math.ceil(remaining/1000)}s`;
 },1200);
 
 window.addEventListener("message",(event)=>{
 if(event?.data?.type==="SPLASH_STATUS"){
-realMessagesStarted=true;
-const payload=event.data.payload||{};
-if(payload.ready===true){
-appReadySignalReceived=true;
-appendLog("✅ App signaled ready — waiting minimum time…");
+setStatus(event.data.payload||{});
 }
-setStatus({
-...payload,
-progress:typeof payload.progress==="number"?payload.progress:computeProgress()
-});
+
+if(event?.data?.type==="UPDATE_READY"){
+appendLog("✅ Update ready.");
+updateSection.style.display="block";
+}
+
+if(event?.data?.type==="APP_READY"){
+appReady=true;
+if(Date.now()-startedAt>=MIN_VISIBLE_MS){
+window.postMessage({type:"SPLASH_DONE"},"*");
+}
 }
 });
 
-appendLog("Boot sequence started…");
-appendLog("Checking system environment…");
+installBtn.onclick=()=>{
+window.postMessage({type:"INSTALL_UPDATE"},"*");
+};
 
-/* ===== ROTATING ADS ===== */
+/* ===== ADS ===== */
 const ads=[
 {
 title:"🚀 Powered by netsafehub",
@@ -266,11 +271,6 @@ link:"https://netsafehub.com"
 {
 title:"📱 Custom Business Apps",
 text:"Android & iOS solutions for African businesses.",
-link:"https://netsafehub.com"
-},
-{
-title:"🌍 Professional Websites",
-text:"Modern websites that convert customers.",
 link:"https://netsafehub.com"
 }
 ];
@@ -290,6 +290,9 @@ adIndex=(adIndex+1)%ads.length;
 
 setInterval(showAd,15000);
 showAd();
+
+appendLog("Boot sequence started…");
+appendLog("Checking for updates…");
 </script>
 </body>
 </html>
