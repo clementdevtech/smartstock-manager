@@ -1,5 +1,6 @@
 const asyncHandler = require("express-async-handler");
 const { query } = require("../config/db");
+const sqlite = require("../sqlite");
 const { Parser } = require("json2csv");
 
 /* =====================================================
@@ -135,13 +136,12 @@ exports.targetProgress = asyncHandler(async (req, res) => {
   else if (period === "weekly") interval = "7 days";
   else if (period === "monthly") interval = "1 month";
   else {
-    res.status(400);
-    throw new Error("Invalid period");
+    return res.status(400).json({ message: "Invalid period" });
   }
 
-  let targetRes;
   try {
-    targetRes = await query(
+    // 🎯 Get target
+    const targetRes = await query(
       `
       SELECT target_amount
       FROM sales_targets
@@ -151,46 +151,50 @@ exports.targetProgress = asyncHandler(async (req, res) => {
       `,
       [admin_id, period]
     );
-  } catch (err) {
-    return res.status(503).json({
-      message: "Reports unavailable (offline mode)",
-    });
-  }
 
-  if (!targetRes.rows.length) {
+    if (!targetRes.rows.length) {
+      return res.json({
+        actual: 0,
+        target: 0,
+        percent: 0,
+        status: "no-target",
+      });
+    }
+
+    // 📊 Get actual sales
+    const actualRes = await query(
+      `
+      SELECT COALESCE(SUM(total_amount),0) total
+      FROM sales
+      WHERE admin_id=$1
+        AND created_at >= CURRENT_DATE - INTERVAL $2
+      `,
+      [admin_id, interval]
+    );
+
+    const actual = Number(actualRes.rows[0].total);
+    const target = Number(targetRes.rows[0].target_amount);
+    const percent = Math.min((actual / target) * 100, 100);
+
     return res.json({
-      actual: 0,
-      target: 0,
-      percent: 0,
-      status: "no-target",
+      actual,
+      target,
+      percent: Math.round(percent),
+      status:
+        percent >= 100
+          ? "achieved"
+          : percent >= 80
+          ? "on-track"
+          : "behind",
+    });
+  } catch (err) {
+    console.error("Target progress error:", err.message);
+
+    return res.status(503).json({
+      unavailable: true,
+      message: "Reports temporarily unavailable",
     });
   }
-
-  const actualRes = await query(
-    `
-    SELECT COALESCE(SUM(total_amount),0) total
-    FROM sales
-    WHERE admin_id=$1
-      AND created_at >= CURRENT_DATE - INTERVAL '${interval}'
-    `,
-    [admin_id]
-  );
-
-  const actual = Number(actualRes.rows[0].total);
-  const target = Number(targetRes.rows[0].target_amount);
-  const percent = Math.min((actual / target) * 100, 100);
-
-  res.json({
-    actual,
-    target,
-    percent: Math.round(percent),
-    status:
-      percent >= 100
-        ? "achieved"
-        : percent >= 80
-        ? "on-track"
-        : "behind",
-  });
 });
 
 /* =====================================================
@@ -318,4 +322,108 @@ exports.exportCSV = asyncHandler(async (req, res) => {
   res.header("Content-Type", "text/csv");
   res.attachment(`${table}.csv`);
   res.send(csv);
+});
+
+
+/* =====================================================
+   🤖 AUTO-GENERATE SALES TARGETS
+===================================================== */
+exports.generateAutoTarget = asyncHandler(async (req, res) => {
+  const { period } = req.body; // 'daily', 'weekly', 'monthly'
+  const { id: admin_id } = req.user;
+
+  if (!["daily", "weekly", "monthly"].includes(period)) {
+    res.status(400);
+    throw new Error("Invalid period. Must be 'daily', 'weekly', or 'monthly'");
+  }
+
+  // Determine interval
+  let interval;
+  if (period === "daily") interval = "1 day";
+  else if (period === "weekly") interval = "7 days";
+  else if (period === "monthly") interval = "1 month";
+
+  // Decide whether to use local SQLite or Postgres
+  const isOffline = !process.env.POSTGRES_ONLINE; // set this in your env when offline
+
+  let totalSales = 0;
+
+  try {
+    if (isOffline) {
+      // Local SQLite
+      const row = await sqlite.get(
+        `SELECT COALESCE(SUM(total),0) AS total
+         FROM offline_sales
+         WHERE adminId=? AND createdAt >= datetime('now', '-${interval}')`,
+        [admin_id]
+      );
+      totalSales = Number(row.total || 0);
+
+      // Ensure local_sales_targets table exists
+      await sqlite.run(`
+        CREATE TABLE IF NOT EXISTS local_sales_targets (
+          id INTEGER PRIMARY KEY,
+          adminId TEXT NOT NULL,
+          period TEXT NOT NULL,
+          targetAmount REAL NOT NULL,
+          generatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+          syncStatus TEXT DEFAULT 'pending'
+        );
+      `);
+
+      // Save target locally
+      const insert = await sqlite.run(
+        `INSERT INTO local_sales_targets (adminId, period, targetAmount)
+         VALUES (?, ?, ?)`,
+        [admin_id, period, Math.round(totalSales * 1.1)]
+      );
+
+      return res.json({
+        success: true,
+        message: `Auto target generated locally for ${period}`,
+        target: {
+          id: insert.lastInsertRowid,
+          adminId: admin_id,
+          period,
+          targetAmount: Math.round(totalSales * 1.1),
+        },
+      });
+    } else {
+      // Online Postgres
+      const salesRes = await query(
+        `
+        SELECT COALESCE(SUM(total_amount),0) AS total
+        FROM sales
+        WHERE admin_id=$1
+          AND created_at >= CURRENT_DATE - INTERVAL '${interval}'
+        `,
+        [admin_id]
+      );
+      totalSales = Number(salesRes.rows[0].total);
+
+      const targetAmount = Math.round(totalSales * 1.1);
+
+      const insertRes = await query(
+        `
+        INSERT INTO sales_targets (admin_id, period, target_amount)
+        VALUES ($1, $2, $3)
+        RETURNING *
+        `,
+        [admin_id, period, targetAmount]
+      );
+
+      return res.json({
+        success: true,
+        message: `Auto target generated for ${period}`,
+        target: insertRes.rows[0],
+      });
+    }
+  } catch (err) {
+    console.error("Error generating auto target:", err.message);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to generate auto target",
+      error: err.message,
+    });
+  }
 });

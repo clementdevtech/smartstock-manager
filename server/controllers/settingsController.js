@@ -83,7 +83,9 @@ const updateBusinessSettings = asyncHandler(async (req, res) => {
   res.json(settings);
 });
 
+
 module.exports = {
   getBusinessSettings,
   updateBusinessSettings,
 };
+

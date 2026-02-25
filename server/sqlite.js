@@ -345,6 +345,26 @@ CREATE TABLE IF NOT EXISTS offline_logos (
   cloudinary_public_id TEXT
 );
 
+
+/* =========================
+   SALES TARGETS (OFFLINE)
+========================= */
+CREATE TABLE IF NOT EXISTS local_sales_targets (
+  id INTEGER PRIMARY KEY,
+  postgresId TEXT,
+  adminId TEXT NOT NULL,
+  period TEXT NOT NULL, -- daily, weekly, monthly
+  targetAmount REAL NOT NULL,
+  generatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
+  syncStatus TEXT DEFAULT 'pending'
+);
+
+CREATE INDEX IF NOT EXISTS idx_local_sales_targets_admin
+ON local_sales_targets (adminId);
+
+CREATE INDEX IF NOT EXISTS idx_local_sales_targets_period
+ON local_sales_targets (period);
+
 `);
 
 

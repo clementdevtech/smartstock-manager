@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ShoppingCart,
   PlusCircle,
   Trash2,
-  DollarSign,
   Search,
   AlertCircle,
 } from "lucide-react";
@@ -25,15 +24,17 @@ const Sales = () => {
   const [toast, setToast] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const storeId = localStorage.getItem("storeId");
 
   // ================= FETCH DATA =================
   const fetchData = async () => {
     try {
       const [itemsRes, salesRes, summaryRes] = await Promise.all([
-        api("/api/items", "GET"),
-        api("/api/sales", "GET"),
-        api("/api/sales/summary/daily", "GET"),
+        api(`/api/items?storeId=${storeId}`, "GET"),
+        api(`/api/sales?storeId=${storeId}`, "GET"),
+        api(`/api/sales/summary/daily?storeId=${storeId}`, "GET"),
       ]);
+
       setItems(itemsRes || []);
       setSales(salesRes || []);
       setSummary(summaryRes || {});
@@ -50,29 +51,28 @@ const Sales = () => {
   const addToCart = () => {
     if (!selectedItem || quantity <= 0) return;
 
-    const item = items.find((i) => i._id === selectedItem);
+    const item = items.find((i) => i.id === selectedItem);
     if (!item) return;
 
-    if (quantity > item.stock) {
-      return setToast({
-        message: `Not enough stock for ${item.name}`,
-        type: "warning",
-      });
-    }
-
     setCart((prev) => {
-      const existing = prev.find((p) => p.item === item._id);
+      const existing = prev.find((p) => p.id === item.id);
+
+      const newQuantity = existing
+        ? existing.quantity + quantity
+        : quantity;
+
+      if (newQuantity > item.stock) {
+        setToast({
+          message: `Not enough stock for ${item.name}`,
+          type: "warning",
+        });
+        return prev;
+      }
+
       if (existing) {
         return prev.map((p) =>
-          p.item === item._id
-            ? {
-                ...p,
-                quantity: p.quantity + quantity,
-                total: p.unitPrice * (p.quantity + quantity),
-                profit:
-                  (item.retailPrice - item.wholesalePrice) *
-                  (p.quantity + quantity),
-              }
+          p.id === item.id
+            ? { ...p, quantity: newQuantity }
             : p
         );
       }
@@ -80,13 +80,11 @@ const Sales = () => {
       return [
         ...prev,
         {
-          item: item._id,
+          id: item.id,
           name: item.name,
-          quantity,
           unitPrice: item.retailPrice,
-          total: item.retailPrice * quantity,
-          profit:
-            (item.retailPrice - item.wholesalePrice) * quantity,
+          costPrice: item.wholesalePrice,
+          quantity,
         },
       ];
     });
@@ -95,8 +93,56 @@ const Sales = () => {
     setQuantity(1);
   };
 
-  // ================= TOTALS =================
-  const subtotal = cart.reduce((s, i) => s + i.total, 0);
+  // ================= REMOVE ITEM =================
+  const removeFromCart = (id) => {
+    setCart((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  // ================= UPDATE QUANTITY =================
+  const updateQuantity = (id, value) => {
+    const item = items.find((i) => i.id === id);
+    if (!item) return;
+
+    const newQty = Number(value);
+    if (newQty <= 0) return;
+
+    if (newQty > item.stock) {
+      setToast({
+        message: `Only ${item.stock} in stock`,
+        type: "warning",
+      });
+      return;
+    }
+
+    setCart((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, quantity: newQty } : c
+      )
+    );
+  };
+
+  // ================= DERIVED TOTALS =================
+  const subtotal = useMemo(
+    () =>
+      cart.reduce(
+        (sum, item) => sum + item.unitPrice * item.quantity,
+        0
+      ),
+    [cart]
+  );
+
+  const totalProfit = useMemo(
+    () =>
+      cart.reduce(
+        (sum, item) =>
+          sum +
+          (item.unitPrice - item.costPrice) *
+            item.quantity,
+        0
+      ),
+    [cart]
+  );
+
   const discountAmount = (subtotal * discount) / 100;
   const taxAmount = ((subtotal - discountAmount) * tax) / 100;
   const grandTotal = subtotal - discountAmount + taxAmount;
@@ -104,21 +150,30 @@ const Sales = () => {
   // ================= CHECKOUT =================
   const handleCheckout = async () => {
     if (!customer.trim())
-      return setToast({ message: "Enter customer name", type: "warning" });
+      return setToast({
+        message: "Enter customer name",
+        type: "warning",
+      });
 
     if (cart.length === 0)
-      return setToast({ message: "Cart is empty", type: "warning" });
+      return setToast({
+        message: "Cart is empty",
+        type: "warning",
+      });
 
     try {
       await api("/api/sales", "POST", {
+        storeId,
         customerName: customer,
         items: cart,
         discount,
         tax,
         totalAmount: grandTotal,
+        profit: totalProfit,
       });
 
       setToast({ message: "Sale completed", type: "success" });
+
       setCart([]);
       setCustomer("");
       setDiscount(0);
@@ -151,10 +206,10 @@ const Sales = () => {
 
       {/* SUMMARY */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <Card title="Total Sales" value={`$${summary.totalSales || 0}`} icon={DollarSign} />
-        <Card title="Profit" value={`$${summary.totalProfit || 0}`} />
-        <Card title="Items Sold" value={summary.itemsSold || 0} />
-        <Card title="Transactions" value={summary.transactions || 0} />
+        <Card title="Total Sales" value={`ksh${summary.totalSales || 0}`} />
+        <Card title="Profit" value={`ksh${summary.totalProfit || 0}`} />
+        <Card title="Items Sold" value={`${summary.itemsSold || 0}`} />
+        <Card title="Transactions" value={`${summary.transactions || 0}`} />
       </div>
 
       {/* SALES TABLE */}
@@ -178,10 +233,12 @@ const Sales = () => {
               </tr>
             ) : (
               sales.map((s) => (
-                <tr key={s._id} className="border-t">
+                <tr key={s.id} className="border-t">
                   <td className="p-3">{s.customerName}</td>
                   <td className="p-3">{s.items.length}</td>
-                  <td className="p-3">${s.totalAmount.toFixed(2)}</td>
+                  <td className="p-3">
+                    ksh{s.totalAmount.toFixed(2)}
+                  </td>
                   <td className="p-3">
                     {new Date(s.createdAt).toLocaleDateString()}
                   </td>
@@ -193,7 +250,11 @@ const Sales = () => {
       </div>
 
       {/* NEW SALE MODAL */}
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="New Sale">
+      <Modal
+        isOpen={showModal}
+        onClose={() => setShowModal(false)}
+        title="New Sale"
+      >
         <div className="space-y-4">
           <input
             placeholder="Customer name"
@@ -219,8 +280,8 @@ const Sales = () => {
           >
             <option value="">Select item</option>
             {filteredItems.map((i) => (
-              <option key={i._id} value={i._id}>
-                {i.name} — ${i.retailPrice} ({i.stock})
+              <option key={i.id} value={i.id}>
+                {i.name} — ksh{i.retailPrice} ({i.stock})
               </option>
             ))}
           </select>
@@ -233,43 +294,50 @@ const Sales = () => {
             className="w-full p-2 border rounded"
           />
 
-          <div className="flex gap-2">
-            <input
-              type="number"
-              placeholder="Discount %"
-              value={discount}
-              onChange={(e) => setDiscount(Number(e.target.value))}
-              className="w-full p-2 border rounded"
-            />
-            <input
-              type="number"
-              placeholder="Tax %"
-              value={tax}
-              onChange={(e) => setTax(Number(e.target.value))}
-              className="w-full p-2 border rounded"
-            />
-          </div>
-
-          <button onClick={addToCart} className="w-full bg-green-600 text-white py-2 rounded">
+          <button
+            onClick={addToCart}
+            className="w-full bg-green-600 text-white py-2 rounded"
+          >
             Add to Cart
           </button>
 
           {cart.length > 0 && (
             <>
-              {cart.map((c, i) => (
-                <div key={i} className="flex justify-between">
-                  <span>{c.name} × {c.quantity}</span>
-                  <button onClick={() => setCart(cart.filter((_, idx) => idx !== i))}>
+              {cart.map((c) => (
+                <div
+                  key={c.id}
+                  className="flex justify-between items-center"
+                >
+                  <div>
+                    <p className="font-medium">
+                      {c.name}
+                    </p>
+                    <input
+                      type="number"
+                      min="1"
+                      value={c.quantity}
+                      onChange={(e) =>
+                        updateQuantity(c.id, e.target.value)
+                      }
+                      className="w-20 p-1 border rounded mt-1"
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => removeFromCart(c.id)}
+                  >
                     <Trash2 size={16} />
                   </button>
                 </div>
               ))}
 
               <div className="border-t pt-2 text-sm">
-                <p>Subtotal: ${subtotal.toFixed(2)}</p>
-                <p>Discount: -${discountAmount.toFixed(2)}</p>
-                <p>Tax: ${taxAmount.toFixed(2)}</p>
-                <p className="font-semibold">Total: ${grandTotal.toFixed(2)}</p>
+                <p>Subtotal: ksh{subtotal.toFixed(2)}</p>
+                <p>Discount: -ksh{discountAmount.toFixed(2)}</p>
+                <p>Tax: ksh{taxAmount.toFixed(2)}</p>
+                <p className="font-semibold">
+                  Total: ksh{grandTotal.toFixed(2)}
+                </p>
               </div>
 
               <button
@@ -285,7 +353,10 @@ const Sales = () => {
 
       {toast && (
         <div className="fixed bottom-4 right-4">
-          <Toast {...toast} onClose={() => setToast(null)} />
+          <Toast
+            {...toast}
+            onClose={() => setToast(null)}
+          />
         </div>
       )}
     </div>

@@ -80,7 +80,6 @@ const Inventory = () => {
   const [showScanner, setShowScanner] = useState(false);
 
   const storeId = localStorage.getItem("storeId"); 
-  console.log("Current store ID:", storeId);
 
   /* =====================================================
      Reset form when business type changes
@@ -92,23 +91,23 @@ const Inventory = () => {
   /* =====================================================
      Fetch Inventory (Hybrid-safe)
   ===================================================== */
-  const fetchItems = async () => {
-    try {
-      setLoading(true);
-      const res = await api("/api/items", "GET");
-      setItems(Array.isArray(res) ? res : []);
-    } catch (err) {
-      console.error(err);
-      setToast({ message: "Failed to load inventory", type: "error" });
-    } finally {
-      setLoading(false);
-    }
-  };
+ const fetchItems = async () => { 
+  try {
+    setLoading(true);
+    // Send storeId in query
+    const res = await api(`/api/items?storeId=${storeId}`, "GET");
+    setItems(Array.isArray(res) ? res : []);
+  } catch (err) {
+    console.error(err);
+    setToast({ message: "Failed to load inventory", type: "error" });
+  } finally {
+    setLoading(false);
+  }
+};
 
-  useEffect(() => {
-    fetchItems();
-  }, []);
-
+useEffect(() => {
+  fetchItems();
+}, []);
   /* =====================================================
      Business-aware Search
   ===================================================== */
@@ -218,7 +217,7 @@ const handleSubmit = async (e) => {
     let savedItem;
 
     if (editingItem) {
-      savedItem = await api(`/api/items/${editingItem._id}`, "PUT", payload);
+      savedItem = await api(`/api/items/${editingItem._id}?storeId=${storeId}`, "PUT", payload);
 
       setToast({
         message: "Item updated successfully",
@@ -232,7 +231,7 @@ const handleSubmit = async (e) => {
         )
       );
     } else {
-      savedItem = await api("/api/items", "POST", payload);
+      savedItem = await api(`/api/items?storeId=${storeId}`, "POST", payload);
 
       setToast({
         message: "Item added successfully",
@@ -251,7 +250,7 @@ const handleSubmit = async (e) => {
     ================================= */
 /*
     try {
-      await api("/api/items/stock-movements", "POST", {
+      await api(`/api/items/stock-movements?storeId=${storeId}`, "POST", {
         productId: savedItem?._id || editingItem?._id,
         quantity: payload.quantity,
         type: editingItem ? "adjustment" : "initial_stock",
@@ -290,7 +289,7 @@ const handleSubmit = async (e) => {
     if (!window.confirm("Delete this item permanently?")) return;
 
     try {
-      await api(`/api/items/${id}`, "DELETE");
+      await api(`/api/items/${id}?storeId=${storeId}`, "DELETE");
       setToast({ message: "Item deleted", type: "warning" });
       fetchItems();
     } catch (err) {
@@ -325,11 +324,11 @@ const handleSubmit = async (e) => {
 
       {/* Stats */}
       <div className="grid sm:grid-cols-3 gap-4">
-        <Stat label="Total Stock" value={stats.totalStock} />
-        <Stat label="Stock Value" value={`$${stats.totalValue.toFixed(2)}`} />
+        <Stat label="Total Stock" value={`ksh${stats.totalStock.toFixed(2)}`} />
+        <Stat label="Stock Value" value={`ksh${stats.totalValue.toFixed(2)}`} />
         <Stat
           label="Estimated Profit"
-          value={`$${stats.totalProfit.toFixed(2)}`}
+          value={`ksh${stats.totalProfit.toFixed(2)}`}
         />
       </div>
 
@@ -364,19 +363,19 @@ const handleSubmit = async (e) => {
               </tr>
             </thead>
             <tbody>
-              {filteredItems.map((i) => {
+              {filteredItems.map((i, index) => {
                 const profit =
                   Number(i.retailPrice) - Number(i.wholesalePrice);
 
-                return (
-                  <tr
-                    key={i._id}
-                    className={`border-t ${
-                      isLowStock(i)
-                        ? "bg-red-50 dark:bg-red-900/20"
-                        : ""
-                    }`}
-                  >
+                 return (
+                       <tr
+                       key={i._id || i.id || `${i.sku || "item"}-${index}`}
+                         className={`border-t ${
+                              isLowStock(i)
+                              ? "bg-red-50 dark:bg-red-900/20"
+                              : ""
+                        }`}
+                      >
                     <td className="p-3">
                       <div className="font-medium">{i.name}</div>
 

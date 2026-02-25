@@ -33,6 +33,7 @@ const Reports = () => {
   const [sales, setSales] = useState([]);
   const [items, setItems] = useState([]);
   const [toast, setToast] = useState(null);
+  const storeId = localStorage.getItem("storeId"); 
 
   const COLORS = ["#2563eb", "#16a34a", "#f59e0b", "#8b5cf6"];
 
@@ -41,8 +42,8 @@ const Reports = () => {
   ===================================================== */
   const fetchData = async () => {
     try {
-      const salesRes = await api("/api/sales", "GET");
-      const itemsRes = await api("/api/items", "GET");
+      const salesRes = await api(`/api/sales?storeId=${storeId}`, "GET");
+      const itemsRes = await api(`/api/items?storeId=${storeId}`, "GET");
 
       setSales(Array.isArray(salesRes) ? salesRes : []);
       setItems(Array.isArray(itemsRes) ? itemsRes : []);

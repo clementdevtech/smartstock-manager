@@ -16,6 +16,11 @@ const createSale = asyncHandler(async (req, res) => {
   const storeId = req.user.storeId;
   const cashierId = req.user.id;
 
+  if (!adminId || !storeId) {
+    res.status(400);
+    throw new Error("Invalid user session");
+  }
+
   let subtotal = 0;
 
   /* ===============================
@@ -27,7 +32,7 @@ const createSale = asyncHandler(async (req, res) => {
       throw new Error("Invalid sale item data");
     }
 
-    const item = db.get(
+    const item = await db.get(
       `SELECT * FROM local_items
        WHERE id = ? AND storeId = ? AND adminId = ? AND deleted = 0`,
       [sold.itemId, storeId, adminId]
@@ -53,9 +58,10 @@ const createSale = asyncHandler(async (req, res) => {
   /* ===============================
      🔄 ATOMIC SQLITE TRANSACTION
   ============================== */
-  db.transaction(() => {
+
+  await db.transaction(async () => {
     // 1️⃣ Insert sale header
-    db.run(
+    await db.run(
       `
       INSERT INTO offline_sales (
         receiptNo,
@@ -85,22 +91,25 @@ const createSale = asyncHandler(async (req, res) => {
       ]
     );
 
-    const saleId = db.get(
+    const saleRow = await db.get(
       `SELECT id FROM offline_sales WHERE receiptNo = ?`,
       [receiptNo]
-    ).id;
+    );
+
+    const saleId = saleRow.id;
 
     /* ===============================
        2️⃣ PROCESS EACH SOLD ITEM
     ============================== */
     for (const sold of items) {
-      const item = db.get(
+
+      const item = await db.get(
         `SELECT * FROM local_items WHERE id = ?`,
         [sold.itemId]
       );
 
       /* Insert relational sale_items */
-      db.run(
+      await db.run(
         `
         INSERT INTO sale_items (
           saleId, itemId, quantity, unitPrice, totalPrice
@@ -117,7 +126,7 @@ const createSale = asyncHandler(async (req, res) => {
       );
 
       /* ===== Recipe Deduction (BAR MODE) ===== */
-      const recipeRows = db.all(
+      const recipeRows = await db.all(
         `SELECT * FROM recipes WHERE finishedItemId = ?`,
         [sold.itemId]
       );
@@ -127,7 +136,7 @@ const createSale = asyncHandler(async (req, res) => {
           const totalIngredientQty =
             Number(r.quantityRequired) * Number(sold.quantity);
 
-          db.run(
+          await db.run(
             `
             UPDATE local_items
             SET quantity = quantity - ?,
@@ -138,7 +147,7 @@ const createSale = asyncHandler(async (req, res) => {
             [totalIngredientQty, r.ingredientId]
           );
 
-          db.run(
+          await db.run(
             `
             INSERT INTO stock_movements (
               itemId, movementType, quantity, referenceId, notes
@@ -150,7 +159,7 @@ const createSale = asyncHandler(async (req, res) => {
         }
       } else {
         /* ===== Normal Stock Deduction ===== */
-        db.run(
+        await db.run(
           `
           UPDATE local_items
           SET quantity = quantity - ?,
@@ -161,7 +170,7 @@ const createSale = asyncHandler(async (req, res) => {
           [sold.quantity, sold.itemId]
         );
 
-        db.run(
+        await db.run(
           `
           INSERT INTO stock_movements (
             itemId, movementType, quantity, referenceId
@@ -173,12 +182,11 @@ const createSale = asyncHandler(async (req, res) => {
       }
 
       /* ===== Batch FIFO Deduction ===== */
-      const trackBatches = item.trackBatches === 1;
+      if (item.trackBatches === 1) {
 
-      if (trackBatches) {
         let remaining = Number(sold.quantity);
 
-        const batches = db.all(
+        const batches = await db.all(
           `
           SELECT * FROM item_batches
           WHERE itemId = ?
@@ -192,7 +200,7 @@ const createSale = asyncHandler(async (req, res) => {
 
           const deduct = Math.min(batch.quantity, remaining);
 
-          db.run(
+          await db.run(
             `UPDATE item_batches
              SET quantity = quantity - ?
              WHERE id = ?`,
@@ -218,20 +226,24 @@ const createSale = asyncHandler(async (req, res) => {
 ===================================================== */
 const getSales = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
-  const storeId = req.user.storeId;
+  const storeId = req.query.storeId;
 
-  const sales = db.all(
+  if (!adminId || !storeId) {
+    return res.status(400).json({ message: "Invalid user session" });
+  }
+
+  const sales = await db.all(
     `SELECT * FROM offline_sales
      WHERE storeId = ? AND adminId = ?
      ORDER BY createdAt DESC`,
     [storeId, adminId]
-  );
+  ) || [];
 
   for (const sale of sales) {
-    sale.items = db.all(
+    sale.items = await db.all(
       `SELECT * FROM sale_items WHERE saleId = ?`,
       [sale.id]
-    );
+    ) || [];
   }
 
   res.json(sales);
@@ -242,9 +254,9 @@ const getSales = asyncHandler(async (req, res) => {
 ===================================================== */
 const getSaleById = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
-  const storeId = req.user.storeId;
+  const storeId = req.query.storeId;
 
-  const sale = db.get(
+  const sale = await db.get(
     `SELECT * FROM offline_sales
      WHERE id = ? AND storeId = ? AND adminId = ?`,
     [req.params.id, storeId, adminId]
@@ -269,7 +281,7 @@ const getSaleById = asyncHandler(async (req, res) => {
 const getDailySummary = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
 
-  const summary = db.get(
+  const summary = await db.get(
     `
     SELECT
       COUNT(*) AS transactions,
@@ -296,7 +308,7 @@ const getDailySummary = asyncHandler(async (req, res) => {
 ===================================================== */
 const deleteSale = asyncHandler(async (req, res) => {
   const adminId = req.user.adminId || req.user.id;
-  const storeId = req.user.storeId;
+  const storeId = req.query.storeId;
   const saleId = req.params.id;
 
   const sale = db.get(

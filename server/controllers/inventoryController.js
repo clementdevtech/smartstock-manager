@@ -44,32 +44,52 @@ const sendLowStockEmail = async (item, email) => {
    GET ITEMS (OFFLINE FIRST)
 ===================================================== */
 const getItems = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId; 
 
-  const localItems = sqlite.all(
-    `SELECT * FROM local_items
-     WHERE adminId = ? AND storeId = ? AND deleted = 0
-     ORDER BY updatedAt DESC`,
-    [adminId, storeId]
-  );
+  if (!storeId) {
+    return res.status(400).json({ message: "storeId is required" });
+  }
 
-  if (!(await isOnline())) return res.json(localItems);
 
-  const { rows } = await query(
-    `SELECT * FROM items
-     WHERE admin_id = $1 AND store_id = $2
-     ORDER BY updated_at DESC`,
-    [adminId, storeId]
-  );
+  try {
+    // Fetch from local SQLite first (offline support)
+    const localItems = await sqlite.all(
+      `SELECT * FROM local_items
+       WHERE adminId = ? AND storeId = ? AND deleted = 0
+       ORDER BY updatedAt DESC`,
+      [adminId, storeId]
+    );
 
-  res.json(rows);
+    if (!(await isOnline())) {
+      console.log("📡 Offline mode: returning local items");
+      return res.json(localItems);
+    }
+
+    // Fetch from online Postgres if online
+    const { rows } = await query(
+      `SELECT * FROM items
+       WHERE admin_id = $1 AND store_id = $2
+       ORDER BY updated_at DESC`,
+      [adminId, storeId]
+    );
+
+    // Optionally: merge localItems with rows if there are unsynced offline items
+    // For now, we just return online rows
+    res.json(rows);
+
+  } catch (err) {
+    console.error("❌ Error fetching items:", err.message);
+    res.status(500).json({ message: "Failed to fetch items", error: err.message });
+  }
 });
 
 /* =====================================================
    GET ITEM BY ID
 ===================================================== */
 const getItemById = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId;
 
   const local = sqlite.get(
     `SELECT * FROM local_items
@@ -102,7 +122,8 @@ const getItemById = asyncHandler(async (req, res) => {
    GET ITEM BY BARCODE
 ===================================================== */
 const getItemByBarcode = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId;
 
   const local = sqlite.get(
     `SELECT * FROM local_items
@@ -241,8 +262,9 @@ const createItem = asyncHandler(async (req, res) => {
    UPDATE ITEM QUANTITY
 ===================================================== */
 const updateItem = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
   const { quantity } = req.body;
+  const storeId = req.query.storeId;
 
   sqlite.run(
     `UPDATE local_items
@@ -276,7 +298,8 @@ const updateItem = asyncHandler(async (req, res) => {
    DELETE ITEM (SOFT DELETE)
 ===================================================== */
 const deleteItem = asyncHandler(async (req, res) => {
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId;
 
   sqlite.run(
     `UPDATE local_items
@@ -302,7 +325,8 @@ const deleteItem = asyncHandler(async (req, res) => {
 const getWeeklyBestItems = asyncHandler(async (req, res) => {
   if (!(await isOnline())) return res.json([]);
 
-  const { adminId, storeId } = getTenant(req);
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId;
 
   const { rows } = await query(
     `

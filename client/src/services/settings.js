@@ -8,7 +8,7 @@ export const changePassword = async (currentPassword, newPassword) => {
 };
 
 export const getBusinessInfo = () =>
-  api("/api/settings/business", "GET");
+  api("/api/settings/", "GET"); 
 
 export const updateBusinessInfo = (data) =>
   api("/api/settings/business", "PUT", data);

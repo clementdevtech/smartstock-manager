@@ -9,4 +9,5 @@ const {
 router.get("/", protect, getBusinessSettings);
 router.put("/business", protect, updateBusinessSettings);
 
+
 module.exports = router;

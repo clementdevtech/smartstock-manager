@@ -3,12 +3,13 @@ import { AlertTriangle } from "lucide-react";
 import { api } from "../../utils/api";
 
 export default function LowStockPanel() {
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState([]); 
   const [loading, setLoading] = useState(true);
+  const storeId = localStorage.getItem("storeId"); 
 
   const loadLowStock = async () => {
     try {
-      const allItems = await api("/api/items", "GET");
+      const allItems = await api(`/api/items?storeId=${storeId}`, "GET");
 
       const low = allItems.filter(
         (i) => i.quantity <= (i.lowStockThreshold ?? 5)

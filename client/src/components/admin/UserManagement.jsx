@@ -5,10 +5,11 @@ import { createUser, getUsers, resetUserPassword } from "../../services/admin";
 export default function UserManagement() {
   const { register, handleSubmit, reset } = useForm();
   const [users, setUsers] = useState([]);
+  const [passwords, setPasswords] = useState({});
 
   const load = async () => {
-    const data = await getUsers();
-    setUsers(data);
+    const res = await getUsers();
+    setUsers(Array.isArray(res) ? res : res?.users ?? []);
   };
 
   useEffect(() => {
@@ -28,12 +29,16 @@ export default function UserManagement() {
       <div className="border p-4 rounded">
         <h2 className="font-semibold mb-2">Register User</h2>
 
-        <form onSubmit={handleSubmit(onCreate)} className="grid grid-cols-2 gap-3">
+        <form
+          onSubmit={handleSubmit(onCreate)}
+          className="grid grid-cols-2 gap-3"
+        >
           <input {...register("email")} placeholder="Email" required />
-          <input {...register("password")} placeholder="Password" required />
+          <input type="password" {...register("password")} placeholder="Password" required />
           <input {...register("storeName")} placeholder="Store Name" />
           <input {...register("phone")} placeholder="Phone" />
           <input {...register("country")} placeholder="Country" />
+
           <button className="col-span-2 bg-emerald-600 text-white p-2 rounded">
             Create User
           </button>
@@ -51,11 +56,13 @@ export default function UserManagement() {
             <input
               type="password"
               placeholder="New password"
-              onChange={(e) => (u.newPass = e.target.value)}
+              onChange={(e) =>
+                setPasswords((p) => ({ ...p, [u.email]: e.target.value }))
+              }
             />
 
             <button
-              onClick={() => resetUserPassword(u.email, u.newPass)}
+              onClick={() => resetUserPassword(u.email, passwords[u.email])}
               className="bg-blue-600 text-white px-3 py-1 rounded"
             >
               Update

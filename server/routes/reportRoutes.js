@@ -9,6 +9,7 @@ const {
   forecast,
   profitLeaks,
   exportCSV,
+  generateAutoTarget,
 } = require("../controllers/reportController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -22,5 +23,6 @@ router.get("/target-progress", protect, targetProgress);
 router.get("/forecast", protect, forecast);
 router.get("/profit-leaks", protect, profitLeaks);
 router.get("/export/:table", protect, exportCSV);
+router.post("/auto", protect, generateAutoTarget);
 
 module.exports = router;

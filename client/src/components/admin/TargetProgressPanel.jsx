@@ -5,6 +5,7 @@ export default function TargetProgressPanel() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
 
   useEffect(() => {
     const loadProgress = async () => {
@@ -12,6 +13,12 @@ export default function TargetProgressPanel() {
 
       if (res?.offline) {
         setOffline(true);
+        setLoading(false);
+        return;
+      }
+
+      if (res?.unavailable) {
+        setUnavailable(true);
         setLoading(false);
         return;
       }
@@ -25,11 +32,22 @@ export default function TargetProgressPanel() {
 
   if (loading) return null;
 
+  // ❌ NO INTERNET
   if (offline) {
     return (
       <div className="bg-gray-50 border border-dashed rounded-xl p-5 text-gray-500">
         <h2 className="text-xl font-semibold mb-2">📊 Target Progress</h2>
-        <p className="text-sm">Reports unavailable (offline mode)</p>
+        <p className="text-sm">No internet connection</p>
+      </div>
+    );
+  }
+
+  // 🟡 SERVICE DOWN
+  if (unavailable) {
+    return (
+      <div className="bg-gray-50 border border-dashed rounded-xl p-5 text-gray-500">
+        <h2 className="text-xl font-semibold mb-2">📊 Target Progress</h2>
+        <p className="text-sm">Reports temporarily unavailable</p>
       </div>
     );
   }
