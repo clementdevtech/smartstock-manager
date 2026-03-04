@@ -113,8 +113,9 @@ CREATE TABLE IF NOT EXISTS local_users (
   CHECK (role = 'user')
 );
 
+
 /* =========================
-   INVENTORY (UPGRADED)
+   INVENTORY 
 ========================= */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY,
@@ -123,19 +124,29 @@ CREATE TABLE IF NOT EXISTS local_items (
   barcode TEXT,
   name TEXT NOT NULL,
   category TEXT,
-  itemType TEXT DEFAULT 'product',
-  unit TEXT DEFAULT 'pcs',
-  allowDecimalSales INTEGER DEFAULT 0,
-  wholesalePrice REAL,
-  retailPrice REAL,
+
+  /* 🔥 NEW COSTING SYSTEM */
+  costPrice REAL DEFAULT 0,
+  wholesalePrice REAL DEFAULT 0,
+  retailPrice REAL DEFAULT 0,
+
+  /* 🔥 UNIT SYSTEM */
+  stockUnit TEXT DEFAULT 'pcs',
+  sellingUnit TEXT DEFAULT 'pcs',
+  unitsPerPackage REAL DEFAULT 1,
+
   quantity REAL DEFAULT 0,
   lowStockThreshold REAL DEFAULT 5,
+
+  allowDecimalSales INTEGER DEFAULT 0,
   trackBatches INTEGER DEFAULT 0,
   trackExpiry INTEGER DEFAULT 0,
   isControlled INTEGER DEFAULT 0,
+
   supplier TEXT,
   adminId TEXT NOT NULL,
   storeId TEXT NOT NULL,
+
   version INTEGER DEFAULT 1,
   deviceId TEXT,
   deleted INTEGER DEFAULT 0,
@@ -468,6 +479,15 @@ async function migrate(table, column, type = "TEXT") {
     await migrate("local_items", "trackExpiry", "INTEGER DEFAULT 0");
     await migrate("local_items", "isControlled", "INTEGER DEFAULT 0");
     await migrate("local_items", "quantity", "REAL DEFAULT 0");
+    /* ===== INVENTORY UNIT SYSTEM MIGRATIONS ===== */
+
+    await migrate("local_items", "costPrice", "REAL DEFAULT 0");
+    await migrate("local_items", "stockUnit", "TEXT DEFAULT 'pcs'");
+    await migrate("local_items", "sellingUnit", "TEXT DEFAULT 'pcs'");
+    await migrate("local_items", "unitsPerPackage", "REAL DEFAULT 1");
+
+    /* Optional: keep compatibility with old `unit` column */
+    await migrate("local_items", "unit", "TEXT DEFAULT 'pcs'");
 
     /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
 
@@ -486,7 +506,21 @@ async function migrate(table, column, type = "TEXT") {
     await migrate("z_reports", "adminId");
 
     console.log("✅ All migrations complete");
+    
 
+    /* =====================================================
+   🔄 AUTO-UPGRADE OLD UNIT COLUMN
+===================================================== */
+
+   try {
+      await db.run(`
+          UPDATE local_items
+          SET stockUnit = unit
+          WHERE stockUnit IS NULL OR stockUnit = ''
+      `);
+    } catch (err) {
+      console.log("Unit migration skipped");
+    }
     /* =====================================================
        INDEXES (SAFE)
     ===================================================== */

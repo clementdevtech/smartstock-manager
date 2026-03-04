@@ -9,9 +9,15 @@ const {
   updateItem,
   deleteItem,
   createStockMovement,
+  erpSync,
+  processEdi850,
+  importItemsFromCSV,
 } = require("../controllers/inventoryController");
 
 const { protect } = require("../middleware/authMiddleware");
+const multer = require("multer");
+
+const upload = multer({ dest: "uploads/" });
 
 /* =====================================================
    INVENTORY ROUTES (PROTECTED)
@@ -35,6 +41,13 @@ router
 
 
 router.post("/stock-movements", createStockMovement);
+router.post("/erp-sync", erpSync);
+router.post("/850", processEdi850);
+router.post(
+  "/api/items/import/csv",
+  upload.single("file"),
+  importItemsFromCSV
+);
 
 module.exports = router;
 

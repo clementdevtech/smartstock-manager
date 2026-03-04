@@ -2,6 +2,11 @@ const asyncHandler = require("express-async-handler");
 const { query } = require("../config/db");
 const sqlite = require("../sqlite");
 const sendEmail = require("../utils/email");
+const csv = require("csv-parser");
+const fs = require("fs");
+const { pipeline } = require("stream/promises");
+
+const BATCH_SIZE = 500;
 
 /* =====================================================
    HELPERS
@@ -162,44 +167,65 @@ const createItem = asyncHandler(async (req, res) => {
   const storeId = req.body.storeId || req.user.storeId;
 
   if (!storeId) {
-  res.status(400);
-  throw new Error("Store ID is required");
-}
-
+    res.status(400);
+    throw new Error("Store ID is required");
+  }
 
   const data = req.body;
 
+  /* ===============================
+     VALIDATION
+  =============================== */
+  if (Number(data.costPrice) < 0)
+    throw new Error("Cost price cannot be negative");
+
+  if (Number(data.retailPrice) < 0)
+    throw new Error("Retail price cannot be negative");
+
+  if (Number(data.quantity) < 0)
+    throw new Error("Quantity cannot be negative");
+
+  const costPrice = Number(data.costPrice || 0);
+  const retailPrice = Number(data.retailPrice || 0);
+  const wholesalePrice = Number(data.wholesalePrice || 0);
+
+  const stockUnit = data.stockUnit || "pcs";
+  const sellingUnit = data.sellingUnit || "pcs";
+  const unitsPerPackage = Number(data.unitsPerPackage || 1);
+
+  /* ===============================
+     SQLITE (OFFLINE FIRST)
+  =============================== */
+
   sqlite.run(
     `INSERT INTO local_items (
-      sku, barcode, name, category, itemType, unit,
-      allowDecimalSales, wholesalePrice, retailPrice,
+      sku, barcode, name, category,
+      costPrice, wholesalePrice, retailPrice,
       quantity, lowStockThreshold,
-      trackBatches, trackExpiry, isControlled,
+      stockUnit, sellingUnit, unitsPerPackage,
       supplier, adminId, storeId, syncStatus
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
     [
       data.sku,
       data.barcode || null,
       data.name,
-      data.category,
-      data.item_type || "product",
-      data.unit || "pcs",
-      data.allow_decimal_sales ? 1 : 0,
-      data.wholesale_price || 0,
-      data.retail_price || 0,
+      data.category || "general",
+      costPrice,
+      wholesalePrice,
+      retailPrice,
       data.quantity || 0,
-      data.low_stock_threshold || 5,
-      data.track_batches ? 1 : 0,
-      data.track_expiry ? 1 : 0,
-      data.is_controlled ? 1 : 0,
+      data.lowStockThreshold || 5,
+      stockUnit,
+      sellingUnit,
+      unitsPerPackage,
       JSON.stringify(data.supplier || {}),
       adminId,
       storeId,
     ]
   );
 
-  /* Log stock movement */
+  /* STOCK MOVEMENT LOG */
   sqlite.run(
     `INSERT INTO stock_movements (itemId, movementType, quantity, notes)
      VALUES ((SELECT id FROM local_items WHERE sku = ? AND storeId = ?),
@@ -207,45 +233,43 @@ const createItem = asyncHandler(async (req, res) => {
     [data.sku, storeId, data.quantity || 0]
   );
 
-  if (await isOnline()) {
-  const { rows } = await query(
-  `INSERT INTO items (
-    name, sku, barcode, category, item_type, unit,
-    allow_decimal_sales,
-    wholesale_price, retail_price,
-    quantity, low_stock_threshold,
-    track_batches, track_expiry, is_controlled,
-    supplier,
-    entry_date,
-    admin_id, store_id, created_by
-  )
-  VALUES (
-    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
-  )
-  RETURNING *`,
-  [
-    data.name,
-    data.sku,
-    data.barcode || null,
-    data.category,
-    data.item_type || "product",
-    data.unit || "pcs",
-    data.allow_decimal_sales || false,
-    data.wholesale_price || 0,
-    data.retail_price || 0,
-    data.quantity || 0,
-    data.low_stock_threshold || 5,
-    data.track_batches || false,
-    data.track_expiry || false,
-    data.is_controlled || false,
-    data.supplier || {},
-    data.entry_date || new Date(),   // 🔥 ADD THIS
-    adminId,
-    storeId,
-    req.user.id,
-  ]
-);
+  /* ===============================
+     ONLINE SYNC (POSTGRES)
+  =============================== */
 
+  if (await isOnline()) {
+    const { rows } = await query(
+      `INSERT INTO items (
+        name, sku, barcode, category,
+        cost_price, wholesale_price, retail_price,
+        quantity, low_stock_threshold,
+        stock_unit, selling_unit, units_per_package,
+        supplier,
+        admin_id, store_id, created_by
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+      )
+      RETURNING *`,
+      [
+        data.name,
+        data.sku,
+        data.barcode || null,
+        data.category || "general",
+        costPrice,
+        wholesalePrice,
+        retailPrice,
+        data.quantity || 0,
+        data.lowStockThreshold || 5,
+        stockUnit,
+        sellingUnit,
+        unitsPerPackage,
+        data.supplier || {},
+        adminId,
+        storeId,
+        req.user.id,
+      ]
+    );
 
     sqlite.run(
       `UPDATE local_items
@@ -255,7 +279,7 @@ const createItem = asyncHandler(async (req, res) => {
     );
   }
 
-  res.status(201).json({ message: "Item created (enterprise-ready)" });
+  res.status(201).json({ message: "Item created successfully" });
 });
 
 /* =====================================================
@@ -263,35 +287,67 @@ const createItem = asyncHandler(async (req, res) => {
 ===================================================== */
 const updateItem = asyncHandler(async (req, res) => {
   const { adminId } = getTenant(req);
-  const { quantity } = req.body;
   const storeId = req.query.storeId;
+  const data = req.body;
 
   sqlite.run(
     `UPDATE local_items
-     SET quantity = ?, updatedAt = CURRENT_TIMESTAMP, syncStatus = 'pending'
+     SET name = ?,
+         costPrice = ?,
+         retailPrice = ?,
+         wholesalePrice = ?,
+         quantity = ?,
+         stockUnit = ?,
+         sellingUnit = ?,
+         unitsPerPackage = ?,
+         updatedAt = CURRENT_TIMESTAMP,
+         syncStatus = 'pending'
      WHERE postgresId = ? AND adminId = ? AND storeId = ?`,
-    [quantity, req.params.id, adminId, storeId]
-  );
-
-  sqlite.run(
-    `INSERT INTO stock_movements (itemId, movementType, quantity, referenceId)
-     VALUES (
-       (SELECT id FROM local_items WHERE postgresId = ?),
-       'adjustment', ?, ?
-     )`,
-    [req.params.id, quantity, req.params.id]
+    [
+      data.name,
+      data.costPrice,
+      data.retailPrice,
+      data.wholesalePrice,
+      data.quantity,
+      data.stockUnit,
+      data.sellingUnit,
+      data.unitsPerPackage,
+      req.params.id,
+      adminId,
+      storeId,
+    ]
   );
 
   if (await isOnline()) {
     await query(
-      `UPDATE items
-       SET quantity = $1, updated_at = now()
-       WHERE id = $2 AND admin_id = $3 AND store_id = $4`,
-      [quantity, req.params.id, adminId, storeId]
+      `UPDATE items SET
+         name = $1,
+         cost_price = $2,
+         retail_price = $3,
+         wholesale_price = $4,
+         quantity = $5,
+         stock_unit = $6,
+         selling_unit = $7,
+         units_per_package = $8,
+         updated_at = now()
+       WHERE id = $9 AND admin_id = $10 AND store_id = $11`,
+      [
+        data.name,
+        data.costPrice,
+        data.retailPrice,
+        data.wholesalePrice,
+        data.quantity,
+        data.stockUnit,
+        data.sellingUnit,
+        data.unitsPerPackage,
+        req.params.id,
+        adminId,
+        storeId,
+      ]
     );
   }
 
-  res.json({ message: "Item updated (offline-first)" });
+  res.json({ message: "Item updated successfully" });
 });
 
 /* =====================================================
@@ -362,7 +418,7 @@ const createStockMovement = async (req, res) => {
       });
     }
 
-    await db.run(
+    await sqlite.run(
       `INSERT INTO stock_movements 
        (itemId, movementType, quantity, referenceId, notes)
        VALUES (?, ?, ?, ?, ?)`,
@@ -389,6 +445,132 @@ const createStockMovement = async (req, res) => {
   }
 };
 
+const erpSync = asyncHandler(async (req, res) => {
+  const payload = req.body;
+
+  for (const item of payload.items) {
+    await query(
+      `
+      INSERT INTO items (sku, name, quantity, retail_price, store_id)
+      VALUES ($1,$2,$3,$4,$5)
+      ON CONFLICT (sku, store_id)
+      DO UPDATE SET quantity = EXCLUDED.quantity
+      `,
+      [
+        item.sku,
+        item.name,
+        item.qty,
+        item.price,
+        payload.storeId,
+      ]
+    );
+  }
+
+  res.json({ success: true });
+});
+
+const processEdi850 = asyncHandler(async (req, res) => {
+  const edi = req.body;
+
+  for (const line of edi.lines) {
+    await query(`
+        UPDATE items
+        SET quantity = GREATEST(quantity - $1, 0)
+        WHERE sku = $2 AND store_id = $3
+        `, [line.qty, line.sku, edi.storeId]);
+      }
+      
+  res.json({ ok: true });
+});
+
+
+async function bulkInsertItems(rows, adminId, storeId) {
+  const values = [];
+  const params = [];
+
+  rows.forEach((r, i) => {
+    const base = i * 10;
+    params.push(
+      `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10})`
+    );
+
+    values.push(
+      r.name,
+      r.sku,
+      r.barcode || null,
+      Number(r.cost_price || 0),
+      Number(r.wholesale_price || 0),
+      Number(r.retail_price || 0),
+      Number(r.quantity || 0),
+      r.stock_unit || "pcs",
+      r.selling_unit || "pcs",
+      Number(r.units_per_package || 1)
+    );
+  });
+
+  await query(
+    `
+    INSERT INTO items (
+      name, sku, barcode,
+      cost_price, wholesale_price, retail_price,
+      quantity, stock_unit, selling_unit, units_per_package
+    )
+    VALUES ${params.join(",")}
+    ON CONFLICT (sku, store_id) DO UPDATE SET
+      quantity = EXCLUDED.quantity,
+      retail_price = EXCLUDED.retail_price,
+      wholesale_price = EXCLUDED.wholesale_price,
+      cost_price = EXCLUDED.cost_price
+    `,
+    values
+  );
+}
+
+const importItemsFromCSV = asyncHandler(async (req, res) => {
+  const { adminId } = getTenant(req);
+  const storeId = req.query.storeId;
+
+  if (!storeId) {
+    return res.status(400).json({ error: "storeId is required" });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({ error: "CSV file is required" });
+  }
+
+  let batch = [];
+
+  try {
+    await pipeline(
+      fs.createReadStream(req.file.path),
+      csv(),
+      async function* (source) {
+        for await (const row of source) {
+          batch.push(row);
+
+          if (batch.length >= BATCH_SIZE) {
+            await bulkInsertItems(batch, adminId, storeId);
+            batch = [];
+          }
+        }
+
+        if (batch.length) {
+          await bulkInsertItems(batch, adminId, storeId);
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "CSV imported successfully",
+    });
+
+  } finally {
+    fs.unlink(req.file.path, () => {});
+  }
+});
+
+
 module.exports = {
   getItems,
   getItemById,
@@ -398,4 +580,7 @@ module.exports = {
   deleteItem,
   getWeeklyBestItems,
   createStockMovement,
+  erpSync,
+  processEdi850,
+  importItemsFromCSV,
 };

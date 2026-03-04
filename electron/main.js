@@ -88,26 +88,55 @@ function createMainWindow() {
     height: 800,
     show: false,
     icon: getIcon(),
+
+    backgroundColor: "#0f172a", // prevents white flash on load
+
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true
+
+      // 🔐 Security (keep these always)
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      enableRemoteModule: false,
+
+      // 🛡️ Extra hardening
+      devTools: isDev,          // DevTools only in development
+      webSecurity: true,
+      allowRunningInsecureContent: false
     }
   });
 
+  // 🚀 Load UI
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
-    mainWindow.webContents.openDevTools();
+    mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     mainWindow.loadFile(
       path.join(app.getAppPath(), "client", "dist", "index.html")
     );
   }
 
+  // 👁 Show when ready
   mainWindow.once("ready-to-show", () => {
     if (!FORCE_UPDATE) {
       splashWindow?.destroy();
       mainWindow.show();
     }
+  });
+
+  // 🧹 Prevent external navigation (security)
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith("http://localhost") && !url.startsWith("file://")) {
+      event.preventDefault();
+    }
+  });
+
+  // 🧠 Cleanup reference
+  mainWindow.on("closed", () => {
+    mainWindow = null;
   });
 }
 
@@ -279,7 +308,8 @@ async function startBackend() {
       ...process.env,
       NODE_ENV: isDev ? "development" : "production",
       PORT: String(BACKEND_PORT),
-      APP_DATA: app.getPath("userData")
+      APP_DATA: app.getPath("userData"),
+      ELECTRON_RUN: "true" 
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"]
   });
@@ -337,6 +367,8 @@ function stopBackend() {
     setTimeout(() => hardKill(backendProcess), 5000);
   }
 }
+
+app.commandLine.appendSwitch("enable-features", "MediaFoundationVideoCapture");
 
 /* ======================================================
    🧠 APP BOOT

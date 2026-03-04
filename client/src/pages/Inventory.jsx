@@ -14,56 +14,49 @@ import Toast from "../components/Toast";
 import { api } from "../utils/api";
 import { useBusiness } from "../context/BusinessContext";
 import CameraScanner from "../components/CameraScanner";
+const API_BASE = import.meta.env.VITE_API_URL;
 
 /* =====================================================
    Dynamic Default Form Based On Business Type
 ===================================================== */
 const getDefaultForm = (businessType) => {
-  const base = {
+  return {
     name: "",
     sku: "",
     supplier: "",
-    wholesalePrice: "",
-    retailPrice: "",
+
+    /* COSTING */
+    costPrice: "", // what YOU bought it at
+    retailPrice: "", // selling price retail
+    wholesalePrice: "", // selling price wholesale
+
+    /* STOCK */
     quantity: "",
     lowStockThreshold: 5,
+
+    /* UNIT SYSTEM */
+    stockUnit: "pcs",        // how you store it
+    sellingUnit: "pcs",      // how you sell it
+    unitsPerPackage: 1,      // e.g. 24 pieces in 1 carton
+
+    /* OPTIONAL */
+    category: "general",
     entryDate: "",
     expiryDate: "",
   };
-
-  switch (businessType) {
-    case "restaurant":
-      return {
-        ...base,
-        category: "ingredient",
-        unit: "kg",
-        storageLocation: "",
-      };
-
-    case "pharmacy":
-      return {
-        ...base,
-        category: "medicine",
-        unit: "box",
-        batchNumber: "",
-      };
-
-    case "wholesale":
-      return {
-        ...base,
-        category: "bulk",
-        unit: "carton",
-        minimumOrder: "",
-      };
-
-    default:
-      return {
-        ...base,
-        category: "general",
-        unit: "pcs",
-      };
-  }
 };
+
+
+const UNIT_OPTIONS = [
+  { value: "pcs", label: "Pieces" },
+  { value: "kg", label: "Kilograms" },
+  { value: "g", label: "Grams" },
+  { value: "packet", label: "Packets" },
+  { value: "sachet", label: "Sachets" },
+  { value: "box", label: "Box" },
+  { value: "carton", label: "Carton" },
+  { value: "bottle", label: "Bottle" },
+];
 
 const Inventory = () => {
   const { businessType } = useBusiness();
@@ -78,6 +71,7 @@ const Inventory = () => {
   const [toast, setToast] = useState(null);
   const [search, setSearch] = useState("");
   const [showScanner, setShowScanner] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const storeId = localStorage.getItem("storeId"); 
 
@@ -130,21 +124,21 @@ useEffect(() => {
      Stats (Hybrid safe numeric parsing)
   ===================================================== */
   const stats = useMemo(() => {
-    return items.reduce(
-      (acc, i) => {
-        const qty = Number(i.quantity || 0);
-        const retail = Number(i.retailPrice || 0);
-        const wholesale = Number(i.wholesalePrice || 0);
+     return items.reduce(
+        (acc, i) => {
+          const qty = Number(i.quantity || 0);
+          const cost = Number(i.costPrice || 0);
+          const retail = Number(i.retailPrice || 0);
 
-        acc.totalStock += qty;
-        acc.totalValue += qty * retail;
-        acc.totalProfit += qty * (retail - wholesale);
+          acc.totalStock += qty;
+          acc.totalValue += qty * cost;
+          acc.totalProfit += qty * (retail - cost);
 
-        return acc;
-      },
-      { totalStock: 0, totalValue: 0, totalProfit: 0 }
-    );
-  }, [items]);
+      return acc;
+    },
+    { totalStock: 0, totalValue: 0, totalProfit: 0 }
+  );
+}, [items]);
 
   const isLowStock = (item) =>
     Number(item.quantity) <= Number(item.lowStockThreshold || 5);
@@ -201,14 +195,16 @@ const handleSubmit = async (e) => {
     ================================= */
 
     const payload = {
-      ...formData,
-      wholesalePrice: Number(formData.wholesalePrice),
-      retailPrice: Number(formData.retailPrice),
-      quantity: Number(formData.quantity),
-      lowStockThreshold: Number(formData.lowStockThreshold || 0),
-      businessType,
-      storeId,
-    };
+        ...formData,
+        costPrice: Number(formData.costPrice),
+        retailPrice: Number(formData.retailPrice),
+        wholesalePrice: Number(formData.wholesalePrice),
+        quantity: Number(formData.quantity),
+        unitsPerPackage: Number(formData.unitsPerPackage || 1),
+        lowStockThreshold: Number(formData.lowStockThreshold || 0),
+        businessType,
+        storeId,
+      };
 
     /* ================================
        SAVE ITEM
@@ -217,7 +213,7 @@ const handleSubmit = async (e) => {
     let savedItem;
 
     if (editingItem) {
-      savedItem = await api(`/api/items/${editingItem._id}?storeId=${storeId}`, "PUT", payload);
+      savedItem = await api(`/api/items/${editingItem.id}?storeId=${storeId}`, "PUT", payload);
 
       setToast({
         message: "Item updated successfully",
@@ -227,7 +223,7 @@ const handleSubmit = async (e) => {
       /* OPTIMISTIC UPDATE */
       setItems((prev) =>
         prev.map((i) =>
-          i._id === editingItem._id ? { ...i, ...payload } : i
+          i.id === editingItem.id ? { ...i, ...payload } : i
         )
       );
     } else {
@@ -240,7 +236,7 @@ const handleSubmit = async (e) => {
 
       /* OPTIMISTIC INSERT */
       setItems((prev) => [
-        savedItem || { _id: crypto.randomUUID(), ...payload },
+        savedItem || { id: crypto.randomUUID(), ...payload },
         ...prev,
       ]);
     }
@@ -251,7 +247,7 @@ const handleSubmit = async (e) => {
 /*
     try {
       await api(`/api/items/stock-movements?storeId=${storeId}`, "POST", {
-        productId: savedItem?._id || editingItem?._id,
+        productId: savedItem?.id || editingItem?.id,
         quantity: payload.quantity,
         type: editingItem ? "adjustment" : "initial_stock",
         storeId,
@@ -282,6 +278,63 @@ const handleSubmit = async (e) => {
   }
 };
 
+/* =====================================================
+   CSV Import Handler
+===================================================== */  
+
+const handleCSVImport = async (file) => {
+  if (!file) return;
+
+  if (!storeId) {
+    return setToast({
+      message: "Store not configured",
+      type: "error",
+    });
+  }
+
+  const token =
+    localStorage.getItem("token") || sessionStorage.getItem("token");
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    setImporting(true);
+
+    const res = await fetch(
+      `${API_BASE}/api/items/import/csv?storeId=${storeId}`,
+      {
+        method: "POST",
+        headers: {
+          ...(token && { Authorization: `Bearer ${token}` }),
+        },
+        body: formData,
+      }
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || "CSV import failed");
+    }
+
+    setToast({
+      message: "CSV imported successfully",
+      type: "success",
+    });
+
+    fetchItems();
+
+  } catch (err) {
+    console.error(err);
+    setToast({
+      message: err.message || "CSV import failed",
+      type: "error",
+    });
+  } finally {
+    setImporting(false);
+  }
+};
+
   /* =====================================================
      Delete Item
   ===================================================== */
@@ -304,23 +357,39 @@ const handleSubmit = async (e) => {
   return (
     <div className="p-4 space-y-6">
       {/* Header */}
-      <div className="flex justify-between items-center">
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <Package className="text-blue-600" />
-          Inventory ({businessType})
-        </h1>
+      {/* Header */}
+<div className="flex justify-between items-center">
+  <h1 className="text-2xl font-bold flex items-center gap-2">
+    <Package className="text-blue-600" />
+    Inventory ({businessType})
+  </h1>
 
-        <button
-          onClick={() => {
-            setEditingItem(null);
-            setFormData(getDefaultForm(businessType));
-            setShowModal(true);
-          }}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
-        >
-          <PlusCircle size={18} /> Add Item
-        </button>
-      </div>
+  <div className="flex gap-2">
+    {/* CSV Import */}
+    <label className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg cursor-pointer">
+      {importing ? <Loader2 className="animate-spin" size={18} /> : <Package size={18} />}
+      Import CSV
+      <input
+        type="file"
+        accept=".csv"
+        hidden
+        onChange={(e) => handleCSVImport(e.target.files[0])}
+      />
+    </label>
+
+    {/* Add Item */}
+    <button
+      onClick={() => {
+        setEditingItem(null);
+        setFormData(getDefaultForm(businessType));
+        setShowModal(true);
+      }}
+      className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
+    >
+      <PlusCircle size={18} /> Add Item
+    </button>
+  </div>
+</div>
 
       {/* Stats */}
       <div className="grid sm:grid-cols-3 gap-4">
@@ -355,21 +424,21 @@ const handleSubmit = async (e) => {
               <tr>
                 <th className="p-3 text-left">Item</th>
                 <th className="p-3">Qty</th>
-                <th className="p-3">Unit</th>
+                <th className="p-3">Stock Unit</th>
                 <th className="p-3">Cost</th>
-                <th className="p-3">Price</th>
+                <th className="p-3">Retail</th>
+                <th className="p-3">Wholesale</th>
                 <th className="p-3">Profit</th>
                 <th className="p-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {filteredItems.map((i, index) => {
-                const profit =
-                  Number(i.retailPrice) - Number(i.wholesalePrice);
+                const profit = Number(i.retailPrice || 0) - Number(i.costPrice || 0);
 
                  return (
                        <tr
-                       key={i._id || i.id || `${i.sku || "item"}-${index}`}
+                       key={i.id || i.id || `${i.sku || "item"}-${index}`}
                          className={`border-t ${
                               isLowStock(i)
                               ? "bg-red-50 dark:bg-red-900/20"
@@ -402,11 +471,24 @@ const handleSubmit = async (e) => {
                       )}
                     </td>
 
-                    <td className="p-3 text-center">{i.unit}</td>
-                    <td className="p-3 text-center">${i.wholesalePrice}</td>
-                    <td className="p-3 text-center">${i.retailPrice}</td>
+                    <td className="p-3 text-center">
+                      {i.quantity} {i.stockUnit}
+                    </td>
+
+                    <td className="p-3 text-center">
+                      Ksh {Number(i.costPrice).toFixed(2)}
+                    </td>
+
+                    <td className="p-3 text-center">
+                      Ksh {Number(i.retailPrice).toFixed(2)}
+                    </td>
+
+                    <td className="p-3 text-center">
+                      Ksh {Number(i.wholesalePrice).toFixed(2)}
+                    </td>
+
                     <td className="p-3 text-center text-green-600">
-                      ${profit.toFixed(2)}
+                      Ksh {profit.toFixed(2)}
                     </td>
 
                     <td className="p-3 flex gap-2 justify-end">
@@ -422,7 +504,7 @@ const handleSubmit = async (e) => {
                       </button>
 
                       <button
-                        onClick={() => handleDelete(i._id)}
+                        onClick={() => handleDelete(i.id)}
                         className="text-red-600"
                       >
                         <Trash2 size={18} />
@@ -623,6 +705,77 @@ setShowScanner,
     className="p-2 border rounded-md"
   />
 </div>
+
+<div className="grid grid-cols-3 gap-3">
+  <input
+    type="number"
+    placeholder="Quantity"
+    value={formData.quantity}
+    onChange={(e) =>
+      setFormData({ ...formData, quantity: e.target.value })
+    }
+    className="p-2 border rounded-md"
+    required
+  />
+
+  <select
+    value={formData.stockUnit}
+    onChange={(e) =>
+      setFormData({ ...formData, stockUnit: e.target.value })
+    }
+    className="p-2 border rounded-md"
+  >
+    {UNIT_OPTIONS.map((u) => (
+      <option key={u.value} value={u.value}>
+        {u.label}
+      </option>
+    ))}
+  </select>
+
+  <input
+    type="number"
+    placeholder="Low stock alert"
+    value={formData.lowStockThreshold}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        lowStockThreshold: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+</div>
+
+<div className="grid grid-cols-2 gap-3">
+  <select
+    value={formData.sellingUnit}
+    onChange={(e) =>
+      setFormData({ ...formData, sellingUnit: e.target.value })
+    }
+    className="p-2 border rounded-md"
+  >
+    {UNIT_OPTIONS.map((u) => (
+      <option key={u.value} value={u.value}>
+        Sell as {u.label}
+      </option>
+    ))}
+  </select>
+
+  <input
+    type="number"
+    placeholder="Units per package (e.g. 24)"
+    value={formData.unitsPerPackage}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        unitsPerPackage: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+</div>
+
+
 
 {/* Submit */}
 <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md font-medium">

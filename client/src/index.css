@@ -211,3 +211,31 @@ h5 {
 .btn-danger:hover {
   opacity: 0.9;
 }
+
+@keyframes scan {
+  0% {
+    top: 0%;
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 0.9;
+  }
+  100% {
+    top: 100%;
+    opacity: 0.2;
+  }
+}
+
+.scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    #00ff88,
+    transparent
+  );
+  animation: scan 2s linear infinite;
+}

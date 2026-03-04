@@ -19,8 +19,7 @@ const { syncPendingItems } = require("./sync/syncPendingItems");
    🧠 MODE DETECTION
 ===================================================== */
 const isElectron =
-  !!process.versions.electron ||
-  process.argv.some(arg => arg.toLowerCase().includes("electron"));
+  process.env.ELECTRON_RUN === "true";
 
 /* =====================================================
    🗂️ APP DATA DIR
