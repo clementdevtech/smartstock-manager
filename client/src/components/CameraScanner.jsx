@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { X, Camera, Zap, Flashlight } from "lucide-react";
 
 /* ======================================================
@@ -18,6 +18,54 @@ const CameraScanner = ({
   pharmacyMode = false,
   warehouseMode = false,
 }) => {
+  /* ======================================================
+   AMAZON-LEVEL WAREHOUSE ENGINE
+====================================================== */
+
+const scanHistory = useRef(new Map());
+const scanQueue = useRef([]);
+const queueProcessing = useRef(false);
+
+/* prevent duplicates */
+const isDuplicateScan = (code) => {
+  const now = Date.now();
+
+  if (
+    scanHistory.current.has(code) &&
+    now - scanHistory.current.get(code) < 700
+  ) {
+    return true;
+  }
+
+  scanHistory.current.set(code, now);
+  return false;
+};
+
+/* queue system for 50 scans/sec */
+const queueScan = (code, format, metadata) => {
+  scanQueue.current.push({ code, format, metadata });
+
+  if (!queueProcessing.current) {
+    processQueue();
+  }
+};
+
+const processQueue = async () => {
+  queueProcessing.current = true;
+
+  while (scanQueue.current.length) {
+    const item = scanQueue.current.shift();
+
+    await handleDetected(
+      item.code,
+      item.format,
+      item.metadata
+    );
+  }
+
+  queueProcessing.current = false;
+};
+
   const scannerRef = useRef(null);
   const hardwareBuffer = useRef("");
   const lastKeyTime = useRef(0);
@@ -106,52 +154,328 @@ const CameraScanner = ({
     }
   }, [activeCamera, mode]);
 
+
+  function enhanceFrame(video) {
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  const ctx = canvas.getContext("2d");
+
+  ctx.drawImage(video, 0, 0);
+
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+
+    const gray = d[i] * 0.3 + d[i+1] * 0.59 + d[i+2] * 0.11;
+
+    const contrast = (gray - 128) * 1.4 + 128;
+
+    d[i] = contrast;
+    d[i+1] = contrast;
+    d[i+2] = contrast;
+  }
+
+  ctx.putImageData(img, 0, 0);
+
+  return canvas;
+}
+
+function predictiveFrame(video) {
+
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video,0,0);
+
+  const img = ctx.getImageData(
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  const d = img.data;
+
+  for(let i=0;i<d.length;i+=4){
+
+    const gray =
+      d[i]*0.3 + d[i+1]*0.59 + d[i+2]*0.11;
+
+    const edge = gray > 120 ? 255 : 0;
+
+    d[i] = edge;
+    d[i+1] = edge;
+    d[i+2] = edge;
+  }
+
+  ctx.putImageData(img,0,0);
+
+  return canvas;
+}
+
+async function autoTorch() {
+
+  const video = document.querySelector("#reader video");
+  if (!video || !scannerRef.current) return;
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  canvas.width = 50;
+  canvas.height = 50;
+
+  ctx.drawImage(video, 0, 0, 50, 50);
+
+  const data = ctx.getImageData(0, 0, 50, 50).data;
+
+  let brightness = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    brightness += (data[i] + data[i+1] + data[i+2]) / 3;
+  }
+
+  brightness /= data.length / 4;
+
+  if (brightness < 60) {
+    try {
+      await scannerRef.current.applyVideoConstraints({
+        advanced: [{ torch: true }]
+      });
+    } catch {}
+  }
+}
+
+function parseGS1(code) {
+
+  const gs1 = {};
+
+  const regex = /\((\d{2,4})\)([^\(]+)/g;
+
+  let match;
+
+  while ((match = regex.exec(code))) {
+
+    const ai = match[1];
+    const value = match[2];
+
+    if (ai === "01") gs1.gtin = value;
+    if (ai === "10") gs1.batch = value;
+    if (ai === "17") gs1.expiry = value;
+    if (ai === "21") gs1.serial = value;
+    if (ai === "3103") gs1.weightKg = value / 1000;
+  }
+
+  return gs1;
+}
+
   /* ======================================================
      START SCANNER
   ====================================================== */
+const startScanner = async (cameraId) => {
+  if (scanning || !cameraId) return;
 
-  const startScanner = async (cameraId) => {
-    if (scanning || !cameraId) return;
+  const scanner = new Html5Qrcode("reader", {
+    verbose: false,
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.QR_CODE
+    ]
+  });
 
-    const scanner = new Html5Qrcode("reader");
-    scannerRef.current = scanner;
+  scannerRef.current = scanner;
 
-    try {
-      setScanning(true);
+  let lastScan = "";
+  let lastTime = 0;
 
-      await scanner.start(
-        { deviceId: { exact: cameraId } },
-        {
-          fps: supermarketMode ? 20 : 12,
-          qrbox: supermarketMode ? 200 : 250,
-          aspectRatio: 1.0,
-          experimentalFeatures: {
-            useBarCodeDetectorIfSupported: true,
-          },
+  let aiLoop = null;
+  let refocusLoop = null;
+  let torchLoop = null;
+
+  try {
+    setScanning(true);
+
+    await scanner.start(
+      { deviceId: { exact: cameraId } },
+      {
+        fps: warehouseMode ? 60 : 30,
+
+        qrbox: (w, h) => {
+          const size = Math.floor(Math.min(w, h) * 0.9);
+          return { width: size, height: size * 0.65 };
         },
-        async (decodedText, result) => {
-          await handleDetected(
-            decodedText,
-            result?.result?.format?.formatName,
-            { native: true }
-          );
-        }
-      );
-    } catch (err) {
-      console.error("Scanner start failed:", err);
-      setScanning(false);
-    }
-  };
 
-  const stopScanner = async () => {
-    if (!scannerRef.current) return;
+        aspectRatio: 1.777,
+
+        experimentalFeatures: {
+          useBarCodeDetectorIfSupported: true
+        }
+      },
+
+      async (decodedText, result) => {
+
+        const now = Date.now();
+
+        if (decodedText === lastScan && now - lastTime < 800) return;
+
+        lastScan = decodedText;
+        lastTime = now;
+
+        const gs1 = parseGS1(decodedText);
+
+        await handleDetected(decodedText, result?.format?.formatName, {
+          native: true,
+          gs1
+        });
+
+        if (!continuous && !warehouseMode) {
+          await stopScanner();
+        }
+      }
+    );
+
+    /* =============================
+       ENTERPRISE CAMERA SETTINGS
+    ============================== */
+
     try {
-      await scannerRef.current.stop();
-      await scannerRef.current.clear();
+      await scanner.applyVideoConstraints({
+        advanced: [
+          { focusMode: "continuous" },
+          { focusDistance: 0 },
+          { exposureMode: "continuous" },
+          { whiteBalanceMode: "continuous" },
+          { zoom: 2 }
+        ]
+      });
     } catch {}
-    scannerRef.current = null;
+
+    /* =============================
+       FAST REFOCUS (MOTION FIX)
+    ============================== */
+
+    refocusLoop = setInterval(async () => {
+
+      if (!scannerRef.current) return clearInterval(refocusLoop);
+
+      try {
+        await scanner.applyVideoConstraints({
+          advanced: [{ focusMode: "continuous" }]
+        });
+      } catch {}
+
+    }, 500);
+
+    /* =============================
+       AI ENHANCED DETECTOR LOOP
+    ============================== */
+
+    aiLoop = setInterval(async () => {
+
+  if (!scannerRef.current) {
+    clearInterval(aiLoop);
+    return;
+  }
+
+  const video = document.querySelector("#reader video");
+  if (!video) return;
+
+  try {
+
+   
+    const enhancedFrame = predictiveFrame(video);
+
+    if ("BarcodeDetector" in window) {
+
+      const detector = new window.BarcodeDetector({
+        formats: [
+          "ean_13",
+          "ean_8",
+          "upc_a",
+          "upc_e",
+          "code_128",
+          "qr_code"
+        ]
+      });
+
+      const results = await detector.detect(enhancedFrame);
+
+      /* MULTI BARCODE FRAME DETECTION */
+
+      for (const r of results.slice(0, 10)) {
+
+        const code = r.rawValue;
+
+        if (isDuplicateScan(code)) continue;
+
+        const gs1 = parseGS1(code);
+
+        /* AUTO ZOOM TRACKING */
+
+        try {
+
+          const box = r.boundingBox;
+
+          const zoom =
+            box.width < 140 ? 2.5 : 1.4;
+
+          await scannerRef.current.applyVideoConstraints({
+            advanced: [{ zoom }]
+          });
+
+        } catch {}
+
+        queueScan(code, r.format, {
+          native: true,
+          enhanced: true,
+          multi: true,
+          gs1
+        });
+      }
+    }
+
+  } catch {}
+
+}, warehouseMode ? 20 : 250);
+
+    /* =============================
+       AUTO TORCH IN DARK
+    ============================== */
+
+    torchLoop = setInterval(() => autoTorch(), 1500);
+
+  } catch (err) {
+    console.error("Scanner failed:", err);
     setScanning(false);
-  };
+  }
+};
+
+/* ======================================================
+   STOP SCANNER
+====================================================== */
+const stopScanner = async () => {
+  if (!scannerRef.current) return;
+
+  try {
+    await scannerRef.current.stop();
+    await scannerRef.current.clear();
+  } catch (err) {
+    console.error(err);
+  }
+
+  scannerRef.current = null;
+  setScanning(false);
+};
 
   /* ======================================================
      AI FALLBACK (Native BarcodeDetector)
@@ -412,6 +736,10 @@ const CameraScanner = ({
               ))}
             </select>
           )}
+
+          <div className="scanner-overlay">
+              <div className="laser-line"></div>
+          </div>
 
           <div
             id="reader"

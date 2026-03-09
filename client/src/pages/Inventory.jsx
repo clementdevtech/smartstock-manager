@@ -133,6 +133,7 @@ useEffect(() => {
           acc.totalStock += qty;
           acc.totalValue += qty * cost;
           acc.totalProfit += qty * (retail - cost);
+          
 
       return acc;
     },
@@ -437,14 +438,14 @@ const handleCSVImport = async (file) => {
                 const profit = Number(i.retailPrice || 0) - Number(i.costPrice || 0);
 
                  return (
-                       <tr
-                       key={i.id || i.id || `${i.sku || "item"}-${index}`}
-                         className={`border-t ${
-                              isLowStock(i)
-                              ? "bg-red-50 dark:bg-red-900/20"
-                              : ""
-                        }`}
-                      >
+                     <tr
+                       key={i._id || i.id || `${i.sku || "item"}-${index}`}
+                       className={`border-t ${
+                          isLowStock(i)
+                          ? "bg-red-50 dark:bg-red-900/20"
+                          : ""
+                          }`}
+                          >
                     <td className="p-3">
                       <div className="font-medium">{i.name}</div>
 
@@ -648,8 +649,24 @@ setShowScanner,
   />
 )}
 
+
 {/* Prices */}
-<div className="grid grid-cols-2 gap-3">
+<div className="grid grid-cols-3 gap-3">
+
+  <input
+    type="number"
+    placeholder="Cost price"
+    value={formData.costPrice}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        costPrice: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+    required
+  />
+
   <input
     type="number"
     placeholder="Wholesale price"
