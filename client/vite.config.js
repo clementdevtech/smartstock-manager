@@ -19,6 +19,15 @@ export default defineConfig(({ mode }) => {
       },
     },
 
+    optimizeDeps: {
+      include: [
+         "@tensorflow/tfjs",
+         "@tensorflow/tfjs-backend-webgl",
+         "@tensorflow-models/coco-ssd",
+         "@tensorflow-models/mobilenet"
+        ]
+      },
+
     server: {
       port: 5173,
       proxy: {

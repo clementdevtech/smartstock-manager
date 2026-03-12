@@ -561,17 +561,20 @@ const Stat = ({ label, value }) => (
 );
 
 const InventoryForm = ({
-formData,
-setFormData,
-onSubmit,
-editing,
-businessType,
-showScanner,
-setShowScanner,
-}) => (
+  formData,
+  setFormData,
+  onSubmit,
+  editing,
+  businessType,
+  showScanner,
+  setShowScanner,
+}) => {
 
-  <form onSubmit={onSubmit} className="space-y-3">
+  const [warehouseMode, setWarehouseMode] = useState(false);
 
+  return (
+
+<form onSubmit={onSubmit} className="space-y-3">
 
 {/* Item Name */}
 <input
@@ -607,20 +610,37 @@ setShowScanner,
 
   {/* Camera Scanner */}
   {showScanner && (
-    <div className="space-y-2 border rounded-lg p-2 bg-black/5">
+    <div className="space-y-3 border rounded-lg p-3 bg-black/5">
+
+      {/* Mode Switch */}
+      <div className="flex justify-between items-center text-sm">
+        <span className="font-medium">Scanner Mode</span>
+
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={warehouseMode}
+            onChange={(e)=>setWarehouseMode(e.target.checked)}
+          />
+          Warehouse Mode
+        </label>
+      </div>
+
       <CameraScanner
+        warehouseMode={warehouseMode}
         onDetected={(code, product) => {
-           setFormData({
-               ...formData,
-                 sku: code,
-           name: product?.name || formData.name,
-         });
-      }}
-     onClose={() => setShowScanner(false)}
-   />
 
+          setFormData({
+            ...formData,
+            sku: code,
+            name: product?.name || formData.name,
+          });
 
-      
+          setShowScanner(false);
+        }}
+        onClose={() => setShowScanner(false)}
+      />
+
     </div>
   )}
 </div>
@@ -648,7 +668,6 @@ setShowScanner,
     className="w-full p-2 border rounded-md"
   />
 )}
-
 
 {/* Prices */}
 <div className="grid grid-cols-3 gap-3">
@@ -694,10 +713,12 @@ setShowScanner,
     className="p-2 border rounded-md"
     required
   />
+
 </div>
 
 {/* Quantity */}
 <div className="grid grid-cols-2 gap-3">
+
   <input
     type="number"
     placeholder="Quantity"
@@ -721,9 +742,11 @@ setShowScanner,
     }
     className="p-2 border rounded-md"
   />
+
 </div>
 
 <div className="grid grid-cols-3 gap-3">
+
   <input
     type="number"
     placeholder="Quantity"
@@ -761,9 +784,11 @@ setShowScanner,
     }
     className="p-2 border rounded-md"
   />
+
 </div>
 
 <div className="grid grid-cols-2 gap-3">
+
   <select
     value={formData.sellingUnit}
     onChange={(e) =>
@@ -790,17 +815,17 @@ setShowScanner,
     }
     className="p-2 border rounded-md"
   />
+
 </div>
-
-
 
 {/* Submit */}
 <button className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md font-medium">
   {editing ? "Update Item" : "Save Item"}
 </button>
 
-  </form>
-);
+</form>
+  );
+};
 
 
 export default Inventory;

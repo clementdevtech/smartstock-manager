@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>SmartStock Updater</title>
+
+<style>
+
+body{
+margin:0;
+font-family:Segoe UI,Arial;
+background:#0f172a;
+color:white;
+display:flex;
+justify-content:center;
+align-items:center;
+height:100vh;
+}
+
+.card{
+width:520px;
+background:#1e293b;
+border-radius:12px;
+padding:28px;
+box-shadow:0 15px 40px rgba(0,0,0,.6);
+}
+
+h2{
+margin:0 0 10px;
+font-weight:600;
+}
+
+.version{
+color:#94a3b8;
+font-size:14px;
+margin-bottom:20px;
+}
+
+.progress{
+width:100%;
+height:10px;
+background:#334155;
+border-radius:8px;
+overflow:hidden;
+margin-top:10px;
+}
+
+.bar{
+height:100%;
+width:0%;
+background:#3b82f6;
+transition:width .3s;
+}
+
+.loader{
+width:28px;
+height:28px;
+border:4px solid #334155;
+border-top:4px solid #3b82f6;
+border-radius:50%;
+animation:spin 1s linear infinite;
+margin:auto;
+margin-top:20px;
+}
+
+@keyframes spin{
+0%{transform:rotate(0)}
+100%{transform:rotate(360deg)}
+}
+
+.notes{
+background:#020617;
+border-radius:8px;
+padding:12px;
+margin-top:20px;
+max-height:120px;
+overflow:auto;
+font-size:13px;
+line-height:1.5;
+}
+
+button{
+margin-top:20px;
+padding:10px 18px;
+border:none;
+border-radius:6px;
+background:#3b82f6;
+color:white;
+font-weight:600;
+cursor:pointer;
+}
+
+button.secondary{
+background:#475569;
+}
+
+.status{
+margin-top:15px;
+font-size:14px;
+color:#cbd5f5;
+}
+
+</style>
+</head>
+
+<body>
+
+<div class="card">
+
+<h2>SmartStock Update</h2>
+
+<div class="version" id="version">
+Checking for updates...
+</div>
+
+<div class="loader" id="loader"></div>
+
+<div class="progress" id="progressBox" style="display:none;">
+<div class="bar" id="bar"></div>
+</div>
+
+<div class="status" id="status"></div>
+
+<div class="notes" id="notes"></div>
+
+<button id="install" style="display:none;">Install Update</button>
+<button id="restart" class="secondary" style="display:none;">Restart Now</button>
+
+</div>
+
+<script>
+
+const { ipcRenderer } = require("electron")
+
+const version = document.getElementById("version")
+const status = document.getElementById("status")
+const bar = document.getElementById("bar")
+const progressBox = document.getElementById("progressBox")
+const loader = document.getElementById("loader")
+const notes = document.getElementById("notes")
+const installBtn = document.getElementById("install")
+const restartBtn = document.getElementById("restart")
+
+ipcRenderer.on("update-checking",(e,data)=>{
+
+version.innerText=`Current Version: ${data.current}`
+status.innerText="Checking for updates..."
+
+})
+
+ipcRenderer.on("update-info",(e,data)=>{
+
+loader.style.display="none"
+progressBox.style.display="block"
+
+version.innerText=`${data.current} → ${data.latest}`
+status.innerText=`Update available (${data.size} MB)`
+
+notes.innerText=data.notes || "No release notes"
+
+installBtn.style.display="inline-block"
+
+})
+
+ipcRenderer.on("update-progress",(e,data)=>{
+
+bar.style.width=data.percent+"%"
+status.innerText=`Downloading ${data.percent}%`
+
+})
+
+ipcRenderer.on("update-ready",(e,data)=>{
+
+status.innerText="Update downloaded and ready"
+
+installBtn.style.display="none"
+restartBtn.style.display="inline-block"
+
+})
+
+ipcRenderer.on("update-none",(e,data)=>{
+
+loader.style.display="none"
+status.innerText="You already have the latest version."
+
+})
+
+ipcRenderer.on("update-error",(e,data)=>{
+
+loader.style.display="none"
+status.innerText="Update failed: "+data.message
+
+})
+
+installBtn.onclick=()=>{
+status.innerText="Starting download..."
+ipcRenderer.send("start-update-download")
+}
+
+restartBtn.onclick=()=>{
+ipcRenderer.send("install-update")
+}
+
+</script>
+
+</body>
+</html>

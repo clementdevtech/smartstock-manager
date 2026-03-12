@@ -1,6 +1,6 @@
-const { contextBridge } = require("electron");
+const { contextBridge, ipcRenderer } = require("electron");
 
-contextBridge.exposeInMainWorld("electron", {
-  platform: process.platform,
-  isDesktop: true
+contextBridge.exposeInMainWorld("electronAPI", {
+  checkUpdates: () => ipcRenderer.invoke("check-for-updates")
 });
+

@@ -50,3 +50,24 @@ export const api = async (url, method = "GET", body) => {
 
   return data;
 };
+
+export const sendScan = async (code,data={}) => {
+
+  try{
+
+    await fetch("/api/scans",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify({
+        code,
+        ...data
+      })
+    });
+
+  }catch(e){
+    console.error("API error",e);
+  }
+
+};
