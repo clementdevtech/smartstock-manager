@@ -35,9 +35,12 @@ const getDefaultForm = (businessType) => {
     lowStockThreshold: 5,
 
     /* UNIT SYSTEM */
-    stockUnit: "pcs",        // how you store it
-    sellingUnit: "pcs",      // how you sell it
-    unitsPerPackage: 1,      // e.g. 24 pieces in 1 carton
+    stockUnit: "pcs",
+    sellingUnit: "pcs",
+    unitsPerPackage: 1,
+    packageUnit: "",
+    minSaleQty: 1,
+    saleStep: 1,
 
     /* OPTIONAL */
     category: "general",
@@ -54,6 +57,7 @@ const UNIT_OPTIONS = [
   { value: "packet", label: "Packets" },
   { value: "sachet", label: "Sachets" },
   { value: "box", label: "Box" },
+  { value: "bale", label: "Bale" },
   { value: "carton", label: "Carton" },
   { value: "bottle", label: "Bottle" },
 ];
@@ -85,23 +89,62 @@ const Inventory = () => {
   /* =====================================================
      Fetch Inventory (Hybrid-safe)
   ===================================================== */
- const fetchItems = async () => { 
+  const normalizeItem = (i) => ({
+  ...i,
+
+  /* PRICE SYSTEM */
+  retailPrice: Number(i.retail_price ?? i.retailPrice ?? 0),
+  wholesalePrice: Number(i.wholesale_price ?? i.wholesalePrice ?? 0),
+  costPrice: Number(i.cost_price ?? i.costPrice ?? 0),
+
+  /* STOCK */
+  quantity: Number(i.quantity ?? 0),
+
+  /* SALE RULES */
+  minSaleQty: Number(i.min_sale_qty ?? i.minSaleQty ?? 1),
+  saleStep: Number(i.sale_step ?? i.saleStep ?? 1),
+
+  /* UNIT SYSTEM */
+  unitsPerPackage: Number(i.units_per_package ?? i.unitsPerPackage ?? 1),
+
+  stockUnit: i.stock_unit ?? i.stockUnit ?? "pcs",
+  sellingUnit: i.selling_unit ?? i.sellingUnit ?? "pcs",
+  packageUnit: i.package_unit ?? i.packageUnit ?? null,
+});
+
+const fetchItems = async () => {
   try {
+
     setLoading(true);
-    // Send storeId in query
+
     const res = await api(`/api/items?storeId=${storeId}`, "GET");
-    setItems(Array.isArray(res) ? res : []);
+
+    const normalized = (Array.isArray(res) ? res : []).map(normalizeItem);
+
+    setItems(normalized);
+
+
   } catch (err) {
+
     console.error(err);
-    setToast({ message: "Failed to load inventory", type: "error" });
+
+    setToast({
+      message: "Failed to load inventory",
+      type: "error"
+    });
+
   } finally {
+
     setLoading(false);
+
   }
 };
 
+
+
 useEffect(() => {
-  fetchItems();
-}, []);
+  if (storeId) fetchItems();
+}, [storeId]);
   /* =====================================================
      Business-aware Search
   ===================================================== */
@@ -191,21 +234,44 @@ const handleSubmit = async (e) => {
       }
     }
 
+    if (Number(formData.minSaleQty) < 1)
+  return setToast({
+    message: "Minimum sale quantity must be at least 1",
+    type: "error",
+  });
+
+if (Number(formData.saleStep) < 1)
+  return setToast({
+    message: "Sale step must be at least 1",
+    type: "error",
+  });
+
     /* ================================
        NORMALIZE NUMBERS
     ================================= */
 
     const payload = {
-        ...formData,
-        costPrice: Number(formData.costPrice),
-        retailPrice: Number(formData.retailPrice),
-        wholesalePrice: Number(formData.wholesalePrice),
-        quantity: Number(formData.quantity),
-        unitsPerPackage: Number(formData.unitsPerPackage || 1),
-        lowStockThreshold: Number(formData.lowStockThreshold || 0),
-        businessType,
-        storeId,
-      };
+  ...formData,
+
+  costPrice: Number(formData.costPrice),
+  retailPrice: Number(formData.retailPrice),
+  wholesalePrice: Number(formData.wholesalePrice),
+
+  quantity: Number(formData.quantity),
+
+  unitsPerPackage: Number(formData.unitsPerPackage || 1),
+
+  lowStockThreshold: Number(formData.lowStockThreshold || 0),
+
+  /* NEW FLEXIBLE PACKAGING SYSTEM */
+
+  packageUnit: formData.packageUnit || null,
+  minSaleQty: Number(formData.minSaleQty || 1),
+  saleStep: Number(formData.saleStep || 1),
+
+  businessType,
+  storeId,
+};
 
     /* ================================
        SAVE ITEM
@@ -574,7 +640,7 @@ const InventoryForm = ({
 
   return (
 
-<form onSubmit={onSubmit} className="space-y-3">
+<form onSubmit={onSubmit} className="space-y-4">
 
 {/* Item Name */}
 <input
@@ -589,7 +655,9 @@ const InventoryForm = ({
 
 {/* SKU + Scanner */}
 <div className="space-y-2">
+
   <div className="flex gap-2">
+
     <input
       value={formData.sku}
       onChange={(e) =>
@@ -606,13 +674,13 @@ const InventoryForm = ({
     >
       Scan
     </button>
+
   </div>
 
-  {/* Camera Scanner */}
   {showScanner && (
+
     <div className="space-y-3 border rounded-lg p-3 bg-black/5">
 
-      {/* Mode Switch */}
       <div className="flex justify-between items-center text-sm">
         <span className="font-medium">Scanner Mode</span>
 
@@ -628,25 +696,28 @@ const InventoryForm = ({
 
       <CameraScanner
         warehouseMode={warehouseMode}
-        onDetected={(code, product) => {
+        onDetected={(result) => {
 
-          setFormData({
-            ...formData,
-            sku: code,
-            name: product?.name || formData.name,
+         setFormData({
+          ...formData,
+          sku: result.code
           });
 
-          setShowScanner(false);
+         setShowScanner(false);
+
         }}
         onClose={() => setShowScanner(false)}
       />
 
     </div>
+
   )}
+
 </div>
 
 {/* Pharmacy */}
 {businessType === "pharmacy" && (
+
   <input
     value={formData.batchNumber || ""}
     onChange={(e) =>
@@ -655,10 +726,12 @@ const InventoryForm = ({
     placeholder="Batch Number"
     className="w-full p-2 border rounded-md"
   />
+
 )}
 
 {/* Restaurant */}
 {businessType === "restaurant" && (
+
   <input
     value={formData.storageLocation || ""}
     onChange={(e) =>
@@ -667,9 +740,10 @@ const InventoryForm = ({
     placeholder="Storage Location"
     className="w-full p-2 border rounded-md"
   />
+
 )}
 
-{/* Prices */}
+{/* Pricing */}
 <div className="grid grid-cols-3 gap-3">
 
   <input
@@ -677,10 +751,7 @@ const InventoryForm = ({
     placeholder="Cost price"
     value={formData.costPrice}
     onChange={(e) =>
-      setFormData({
-        ...formData,
-        costPrice: e.target.value,
-      })
+      setFormData({ ...formData, costPrice: e.target.value })
     }
     className="p-2 border rounded-md"
     required
@@ -691,10 +762,7 @@ const InventoryForm = ({
     placeholder="Wholesale price"
     value={formData.wholesalePrice}
     onChange={(e) =>
-      setFormData({
-        ...formData,
-        wholesalePrice: e.target.value,
-      })
+      setFormData({ ...formData, wholesalePrice: e.target.value })
     }
     className="p-2 border rounded-md"
     required
@@ -705,10 +773,7 @@ const InventoryForm = ({
     placeholder="Retail price"
     value={formData.retailPrice}
     onChange={(e) =>
-      setFormData({
-        ...formData,
-        retailPrice: e.target.value,
-      })
+      setFormData({ ...formData, retailPrice: e.target.value })
     }
     className="p-2 border rounded-md"
     required
@@ -716,40 +781,12 @@ const InventoryForm = ({
 
 </div>
 
-{/* Quantity */}
-<div className="grid grid-cols-2 gap-3">
-
-  <input
-    type="number"
-    placeholder="Quantity"
-    value={formData.quantity}
-    onChange={(e) =>
-      setFormData({ ...formData, quantity: e.target.value })
-    }
-    className="p-2 border rounded-md"
-    required
-  />
-
-  <input
-    type="number"
-    placeholder="Low stock alert"
-    value={formData.lowStockThreshold}
-    onChange={(e) =>
-      setFormData({
-        ...formData,
-        lowStockThreshold: e.target.value,
-      })
-    }
-    className="p-2 border rounded-md"
-  />
-
-</div>
-
+{/* Stock */}
 <div className="grid grid-cols-3 gap-3">
 
   <input
     type="number"
-    placeholder="Quantity"
+    placeholder="Stock Quantity"
     value={formData.quantity}
     onChange={(e) =>
       setFormData({ ...formData, quantity: e.target.value })
@@ -787,7 +824,8 @@ const InventoryForm = ({
 
 </div>
 
-<div className="grid grid-cols-2 gap-3">
+{/* Packaging System */}
+<div className="grid grid-cols-3 gap-3">
 
   <select
     value={formData.sellingUnit}
@@ -805,12 +843,56 @@ const InventoryForm = ({
 
   <input
     type="number"
-    placeholder="Units per package (e.g. 24)"
+    placeholder="Units per package"
     value={formData.unitsPerPackage}
     onChange={(e) =>
       setFormData({
         ...formData,
         unitsPerPackage: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+
+  <input
+    type="text"
+    placeholder="Package unit (e.g. bale/carton)"
+    value={formData.packageUnit || ""}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        packageUnit: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+
+</div>
+
+{/* Retail Rules */}
+<div className="grid grid-cols-2 gap-3">
+
+  <input
+    type="number"
+    placeholder="Minimum sale qty"
+    value={formData.minSaleQty}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        minSaleQty: e.target.value,
+      })
+    }
+    className="p-2 border rounded-md"
+  />
+
+  <input
+    type="number"
+    placeholder="Sale step (multiples)"
+    value={formData.saleStep}
+    onChange={(e) =>
+      setFormData({
+        ...formData,
+        saleStep: e.target.value,
       })
     }
     className="p-2 border rounded-md"
@@ -824,6 +906,7 @@ const InventoryForm = ({
 </button>
 
 </form>
+
   );
 };
 

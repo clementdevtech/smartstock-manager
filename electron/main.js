@@ -734,6 +734,40 @@ ipcMain.handle("check-for-updates", async () => {
 
 });
 
+
+/* ===============================
+   OTHER IPC HANDLERS (EXAMPLE)
+================================ */
+ipcMain.handle("sync:items", async (_, items) => {
+  for (const item of items) {
+
+    await db.run(
+      `INSERT OR REPLACE INTO local_items (
+        id,
+        name,
+        retailPrice,
+        quantity,
+        storeId,
+        adminId,
+        updatedAt,
+        syncStatus
+      )
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'synced')`,
+      [
+        item.id,
+        item.name,
+        item.price || 0,
+        item.quantity || 0,
+        item.storeId,
+        item.adminId
+      ]
+    );
+
+  }
+
+  console.log("✅ Items synced to SQLite:", items.length);
+});
+
 /* ======================================================
    🧹 CLEAN EXIT
 ====================================================== */

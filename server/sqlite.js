@@ -119,41 +119,46 @@ CREATE TABLE IF NOT EXISTS local_users (
 ========================= */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY,
-  postgresId TEXT,
+  postgres_id TEXT,
+
   sku TEXT NOT NULL,
   barcode TEXT,
   name TEXT NOT NULL,
   category TEXT,
 
-  /* 🔥 NEW COSTING SYSTEM */
-  costPrice REAL DEFAULT 0,
-  wholesalePrice REAL DEFAULT 0,
-  retailPrice REAL DEFAULT 0,
+  cost_price REAL DEFAULT 0,
+  wholesale_price REAL DEFAULT 0,
+  retail_price REAL DEFAULT 0,
 
-  /* 🔥 UNIT SYSTEM */
-  stockUnit TEXT DEFAULT 'pcs',
-  sellingUnit TEXT DEFAULT 'pcs',
-  unitsPerPackage REAL DEFAULT 1,
+  stock_unit TEXT DEFAULT 'pcs',
+  selling_unit TEXT DEFAULT 'pcs',
+  units_per_package REAL DEFAULT 1,
+
+  package_unit TEXT,
+  min_sale_qty REAL DEFAULT 1,
+  sale_step REAL DEFAULT 1,
 
   quantity REAL DEFAULT 0,
-  lowStockThreshold REAL DEFAULT 5,
+  low_stock_threshold REAL DEFAULT 5,
 
-  allowDecimalSales INTEGER DEFAULT 0,
-  trackBatches INTEGER DEFAULT 0,
-  trackExpiry INTEGER DEFAULT 0,
-  isControlled INTEGER DEFAULT 0,
+  allow_decimal_sales INTEGER DEFAULT 0,
+  track_batches INTEGER DEFAULT 0,
+  track_expiry INTEGER DEFAULT 0,
+  is_controlled INTEGER DEFAULT 0,
 
   supplier TEXT,
-  adminId TEXT NOT NULL,
-  storeId TEXT NOT NULL,
+
+  admin_id TEXT NOT NULL,
+  store_id TEXT NOT NULL,
 
   version INTEGER DEFAULT 1,
-  deviceId TEXT,
+  device_id TEXT,
   deleted INTEGER DEFAULT 0,
-  retryCount INTEGER DEFAULT 0,
-  syncStatus TEXT DEFAULT 'pending',
-  lastSyncedAt TEXT,
-  updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
+  retry_count INTEGER DEFAULT 0,
+  sync_status TEXT DEFAULT 'pending',
+  last_synced_at TEXT,
+
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_local_items_store
@@ -164,6 +169,11 @@ ON local_items (adminId);
 
 CREATE INDEX IF NOT EXISTS idx_local_items_sync
 ON local_items (syncStatus);
+
+CREATE INDEX IF NOT EXISTS idx_local_items_sku
+ON local_items (sku);
+
+
 
 /* =========================
    ITEM BATCHES
@@ -472,22 +482,21 @@ async function migrate(table, column, type = "TEXT") {
 
     await migrate("local_stores", "industryType");
 
-    await migrate("local_items", "barcode");
-    await migrate("local_items", "itemType");
-    await migrate("local_items", "allowDecimalSales", "INTEGER DEFAULT 0");
-    await migrate("local_items", "trackBatches", "INTEGER DEFAULT 0");
-    await migrate("local_items", "trackExpiry", "INTEGER DEFAULT 0");
-    await migrate("local_items", "isControlled", "INTEGER DEFAULT 0");
-    await migrate("local_items", "quantity", "REAL DEFAULT 0");
-    /* ===== INVENTORY UNIT SYSTEM MIGRATIONS ===== */
+    /* ===== INVENTORY UNIT SYSTEM ===== */
 
-    await migrate("local_items", "costPrice", "REAL DEFAULT 0");
-    await migrate("local_items", "stockUnit", "TEXT DEFAULT 'pcs'");
-    await migrate("local_items", "sellingUnit", "TEXT DEFAULT 'pcs'");
-    await migrate("local_items", "unitsPerPackage", "REAL DEFAULT 1");
+   await migrate("local_items", "costPrice", "REAL DEFAULT 0");
+   await migrate("local_items", "wholesalePrice", "REAL DEFAULT 0");
+   await migrate("local_items", "retailPrice", "REAL DEFAULT 0");
 
-    /* Optional: keep compatibility with old `unit` column */
-    await migrate("local_items", "unit", "TEXT DEFAULT 'pcs'");
+   await migrate("local_items", "stockUnit", "TEXT DEFAULT 'pcs'");
+   await migrate("local_items", "sellingUnit", "TEXT DEFAULT 'pcs'");
+   await migrate("local_items", "unitsPerPackage", "REAL DEFAULT 1");
+
+   await migrate("local_items", "packageUnit", "TEXT");
+   await migrate("local_items", "minSaleQty", "REAL DEFAULT 1");
+   await migrate("local_items", "saleStep", "REAL DEFAULT 1");
+
+   await migrate("local_items", "lowStockThreshold", "REAL DEFAULT 5");
 
     /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
 

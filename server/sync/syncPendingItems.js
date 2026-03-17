@@ -111,39 +111,42 @@ async function syncSingleItem(item) {
   ============================ */
   if (!item.postgresId && !item.deleted) {
     const { rows } = await query(
-      `
-      INSERT INTO items (
-        sku, name, category, unit,
-        wholesale_price, retail_price,
-        quantity, low_stock_threshold,
-        batch_number, expiry_date,
-        admin_id, store_id,
-        version, last_device_id
-      ) VALUES (
-        $1,$2,$3,$4,
-        $5,$6,$7,$8,
-        $9,$10,
-        $11,$12,
-        1,$13
-      )
-      RETURNING id, version
-      `,
-      [
-        item.sku,
-        item.name,
-        item.category,
-        item.unit,
-        item.wholesalePrice,
-        item.retailPrice,
-        item.quantity,
-        item.lowStockThreshold,
-        item.batchNumber,
-        item.expiryDate,
-        item.adminId,
-        item.storeId,
-        sqlite.DEVICE_ID
-      ]
-    );
+  `
+  INSERT INTO items (
+    sku, name, category, unit,
+    wholesale_price, retail_price,
+    quantity, low_stock_threshold,
+    batch_number, expiry_date,
+    admin_id, store_id,
+    created_by, -- 🔥 ADD THIS
+    version, last_device_id
+  ) VALUES (
+    $1,$2,$3,$4,
+    $5,$6,$7,$8,
+    $9,$10,
+    $11,$12,
+    $13, -- 🔥 NEW
+    1,$14
+  )
+  RETURNING id, version
+  `,
+  [
+    item.sku,
+    item.name,
+    item.category,
+    item.unit,
+    item.wholesalePrice,
+    item.retailPrice,
+    item.quantity,
+    item.lowStockThreshold,
+    item.batchNumber,
+    item.expiryDate,
+    item.adminId,
+    item.storeId,
+    item.adminId,        // 🔥 created_by FIX
+    sqlite.DEVICE_ID
+  ]
+);
 
     sqlite.run(`
       UPDATE local_items

@@ -162,13 +162,33 @@ const getItemByBarcode = asyncHandler(async (req, res) => {
 /* =====================================================
    CREATE ITEM (ENTERPRISE READY)
 ===================================================== */
+const normalizeUnit = (unit) => {
+  const map = {
+    piece: "pcs",
+    pieces: "pcs",
+    packet: "pcs",
+    packets: "pcs",
+    bale: "cartons",
+    box: "cartons",
+    kg: "kg",
+    liter: "liters",
+    liters: "liters"
+  };
+
+  return map[unit?.toLowerCase()] || "pcs";
+};
+
 const createItem = asyncHandler(async (req, res) => {
   const { adminId } = getTenant(req);
-  const storeId = req.body.storeId || req.user.storeId;
+  const storeId = req.body.storeId || req.user?.storeId;
 
   if (!storeId) {
     res.status(400);
     throw new Error("Store ID is required");
+  }
+
+  if (!adminId) {
+    throw new Error("Admin ID is required");
   }
 
   const data = req.body;
@@ -185,70 +205,112 @@ const createItem = asyncHandler(async (req, res) => {
   if (Number(data.quantity) < 0)
     throw new Error("Quantity cannot be negative");
 
+  /* ===============================
+     NORMALIZATION
+  =============================== */
   const costPrice = Number(data.costPrice || 0);
   const retailPrice = Number(data.retailPrice || 0);
   const wholesalePrice = Number(data.wholesalePrice || 0);
 
-  const stockUnit = data.stockUnit || "pcs";
-  const sellingUnit = data.sellingUnit || "pcs";
+  const stockUnit = normalizeUnit(data.stockUnit);
+  const sellingUnit = normalizeUnit(data.sellingUnit);
   const unitsPerPackage = Number(data.unitsPerPackage || 1);
+  const packageUnit = data.packageUnit || null;
+
+  const minSaleQty = Number(data.minSaleQty || 1);
+  const saleStep = Number(data.saleStep || 1);
+
+  const quantity = Number(data.quantity || 0);
+  const lowStockThreshold = Number(data.lowStockThreshold || 5);
+
+  const supplier = JSON.stringify(data.supplier || {});
+  const createdBy = req.user?.id || adminId;
 
   /* ===============================
      SQLITE (OFFLINE FIRST)
   =============================== */
-
   sqlite.run(
     `INSERT INTO local_items (
       sku, barcode, name, category,
       costPrice, wholesalePrice, retailPrice,
       quantity, lowStockThreshold,
       stockUnit, sellingUnit, unitsPerPackage,
+      packageUnit, minSaleQty, saleStep,
       supplier, adminId, storeId, syncStatus
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.sku,
       data.barcode || null,
       data.name,
       data.category || "general",
+
       costPrice,
       wholesalePrice,
       retailPrice,
-      data.quantity || 0,
-      data.lowStockThreshold || 5,
+
+      quantity,
+      lowStockThreshold,
+
       stockUnit,
       sellingUnit,
       unitsPerPackage,
-      JSON.stringify(data.supplier || {}),
+
+      packageUnit,
+      minSaleQty,
+      saleStep,
+
+      supplier,
       adminId,
       storeId,
+      "pending"
     ]
   );
 
   /* STOCK MOVEMENT LOG */
   sqlite.run(
     `INSERT INTO stock_movements (itemId, movementType, quantity, notes)
-     VALUES ((SELECT id FROM local_items WHERE sku = ? AND storeId = ?),
-     'purchase', ?, 'Initial stock')`,
-    [data.sku, storeId, data.quantity || 0]
+     VALUES (
+       (SELECT id FROM local_items WHERE sku = ? AND storeId = ?),
+       'purchase',
+       ?,
+       'Initial stock'
+     )`,
+    [data.sku, storeId, quantity]
   );
 
   /* ===============================
      ONLINE SYNC (POSTGRES)
   =============================== */
-
   if (await isOnline()) {
     const { rows } = await query(
       `INSERT INTO items (
         name, sku, barcode, category,
-        cost_price, wholesale_price, retail_price,
+
+        cost_price,
+        wholesale_price, retail_price,
+
         quantity, low_stock_threshold,
-        stock_unit, selling_unit, units_per_package,
+
+        unit, selling_unit, units_per_package,
+        measurement_unit,
+
+        package_unit, min_sale_qty, sale_step,
+
         supplier,
+
         admin_id, store_id, created_by
       )
       VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+        $1,$2,$3,$4,
+        $5,
+        $6,$7,
+        $8,$9,
+        $10,$11,$12,
+        $13,
+        $14,$15,$16,
+        $17,
+        $18,$19,$20
       )
       RETURNING *`,
       [
@@ -256,18 +318,30 @@ const createItem = asyncHandler(async (req, res) => {
         data.sku,
         data.barcode || null,
         data.category || "general",
+
         costPrice,
+
         wholesalePrice,
         retailPrice,
-        data.quantity || 0,
-        data.lowStockThreshold || 5,
-        stockUnit,
-        sellingUnit,
+
+        quantity,
+        lowStockThreshold,
+
+        stockUnit,          // ✅ normalized
+        sellingUnit,        // ✅ normalized
         unitsPerPackage,
+
+        data.measurementUnit || null,
+
+        packageUnit,
+        minSaleQty,
+        saleStep,
+
         data.supplier || {},
+
         adminId,
         storeId,
-        req.user.id,
+        createdBy
       ]
     );
 

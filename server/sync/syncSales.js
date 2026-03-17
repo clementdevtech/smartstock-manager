@@ -2,10 +2,96 @@ const db = require("../sqlite");
 const { query } = require("../config/db");
 
 /* =====================================================
-   🔁 SYNC OFFLINE SALES → SUPABASE
+   🔧 CONFIG
+===================================================== */
+const MAX_RETRIES = 5;
+
+/* =====================================================
+   🧠 SAFE JSON PARSER
+===================================================== */
+function safeParseJSON(value) {
+  try {
+    if (!value) return [];
+    if (typeof value === "object") return value;
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
+async function ensureColumn(table, column, type) {
+  const cols = await db.all(`PRAGMA table_info(${table})`);
+  const exists = cols.some(c => c.name === column);
+
+  if (!exists) {
+    console.warn(`🛠 Adding missing column: ${table}.${column}`);
+    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
+async function healOfflineSalesSchema() {
+  await ensureColumn("offline_sales", "retryCount", "INTEGER DEFAULT 0");
+  await ensureColumn("offline_sales", "syncStatus", "TEXT DEFAULT 'pending'");
+  await ensureColumn("offline_sales", "syncedAt", "TEXT");
+  await ensureColumn("offline_sales", "postgresId", "TEXT");
+}
+
+/* =====================================================
+   ⏱ EXPONENTIAL BACKOFF
+===================================================== */
+function backoff(retryCount = 0) {
+  return Math.min(2 ** retryCount * 1000, 30000);
+}
+
+
+/* =====================================================
+   🧠 SAFE JSON PARSER
+===================================================== */
+function safeParseJSON(value) {
+  try {
+    if (!value) return [];
+    if (typeof value === "object") return value;
+    return JSON.parse(value);
+  } catch {
+    return [];
+  }
+}
+
+/* =====================================================
+   ⏱ BACKOFF
+===================================================== */
+function backoff(retryCount = 0) {
+  return Math.min(2 ** retryCount * 1000, 30000);
+}
+
+/* =====================================================
+   🛠 SCHEMA HEALER
+===================================================== */
+async function ensureColumn(table, column, type) {
+  const cols = await db.all(`PRAGMA table_info(${table})`);
+  const exists = cols.some(c => c.name === column);
+
+  if (!exists) {
+    console.warn(`🛠 Adding missing column: ${table}.${column}`);
+    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
+async function healOfflineSalesSchema() {
+  await ensureColumn("offline_sales", "retryCount", "INTEGER DEFAULT 0");
+  await ensureColumn("offline_sales", "syncStatus", "TEXT DEFAULT 'pending'");
+  await ensureColumn("offline_sales", "syncedAt", "TEXT");
+  await ensureColumn("offline_sales", "postgresId", "TEXT");
+}
+
+/* =====================================================
+   🔁 SYNC OFFLINE SALES → POSTGRES
 ===================================================== */
 async function syncOfflineSales() {
-  /* 1️⃣ Check Postgres availability */
+  /* 🔥 0️⃣ AUTO-HEAL SCHEMA */
+  await healOfflineSalesSchema();
+
+  /* 1️⃣ Check connectivity */
   try {
     await query("SELECT 1");
   } catch {
@@ -13,7 +99,7 @@ async function syncOfflineSales() {
     return;
   }
 
-  /* 2️⃣ Fetch pending offline sales */
+  /* 2️⃣ Fetch pending sales */
   let pendingSales;
 
   try {
@@ -21,6 +107,7 @@ async function syncOfflineSales() {
       SELECT *
       FROM offline_sales
       WHERE syncStatus = 'pending'
+        AND (retryCount IS NULL OR retryCount < ${MAX_RETRIES})
       ORDER BY createdAt ASC
     `);
   } catch (err) {
@@ -32,9 +119,29 @@ async function syncOfflineSales() {
 
   console.log(`🔄 Syncing ${pendingSales.length} sale(s) → Supabase`);
 
-  /* 3️⃣ Sync each sale */
+  /* 3️⃣ Process each sale */
   for (const sale of pendingSales) {
     try {
+      /* 🧠 SAFE PARSE */
+      const items = safeParseJSON(sale.items);
+
+      /* 🚫 SKIP CORRUPTED SALES */
+      if (!Array.isArray(items) || items.length === 0) {
+        console.warn("⚠️ Invalid sale items. Marking as failed:", sale.id);
+
+        await db.run(
+          `
+          UPDATE offline_sales
+          SET syncStatus = 'failed'
+          WHERE id = ?
+          `,
+          [sale.id]
+        );
+
+        continue;
+      }
+
+      /* 🚀 INSERT INTO POSTGRES */
       const result = await query(
         `
         INSERT INTO sales (
@@ -54,11 +161,11 @@ async function syncOfflineSales() {
         RETURNING id
         `,
         [
-          JSON.parse(sale.items),
-          sale.total,
+          JSON.stringify(items),
+          Number(sale.total || 0),
           0,
           sale.paymentStatus || "paid",
-          "Walk-in Customer",
+          sale.customerName || "Walk-in Customer",
           sale.createdAt,
           sale.adminId,
           sale.storeId,
@@ -68,14 +175,15 @@ async function syncOfflineSales() {
 
       const postgresId = result.rows[0].id;
 
-      /* 4️⃣ Mark as synced locally */
+      /* ✅ MARK AS SYNCED */
       await db.run(
         `
         UPDATE offline_sales
         SET
           syncStatus = 'synced',
           syncedAt = CURRENT_TIMESTAMP,
-          postgresId = ?
+          postgresId = ?,
+          retryCount = 0
         WHERE id = ?
         `,
         [postgresId, sale.id]
@@ -88,7 +196,39 @@ async function syncOfflineSales() {
         `❌ Failed to sync sale ${sale.receiptNo || sale.id}:`,
         err.message
       );
-      // leave as pending → retry later
+
+      /* 🔁 RETRY */
+      try {
+        await db.run(
+          `
+          UPDATE offline_sales
+          SET retryCount = COALESCE(retryCount, 0) + 1
+          WHERE id = ?
+          `,
+          [sale.id]
+        );
+      } catch (e) {
+        console.error("❌ Retry update failed:", e.message);
+      }
+
+      /* 🛑 STOP AFTER MAX RETRIES */
+      if ((sale.retryCount || 0) + 1 >= MAX_RETRIES) {
+        console.warn("🚫 Max retries reached. Marking as failed:", sale.id);
+
+        await db.run(
+          `
+          UPDATE offline_sales
+          SET syncStatus = 'failed'
+          WHERE id = ?
+          `,
+          [sale.id]
+        );
+      }
+
+      /* ⏱ BACKOFF */
+      await new Promise((r) =>
+        setTimeout(r, backoff(sale.retryCount))
+      );
     }
   }
 }

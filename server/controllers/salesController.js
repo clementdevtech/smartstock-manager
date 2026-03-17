@@ -1,46 +1,133 @@
 const asyncHandler = require("express-async-handler");
 const db = require("../sqlite");
+const { query } = require("../config/db");
 
 /* =====================================================
    CREATE SALE (ENTERPRISE OFFLINE POS)
 ===================================================== */
 const createSale = asyncHandler(async (req, res) => {
-  const { items, paymentType, customerName } = req.body;
+  const { items, paymentType } = req.body;
+  console.log("Creating sale with items:", items);
 
+  /* ===============================
+     VALIDATE INPUT
+  ============================== */
   if (!Array.isArray(items) || items.length === 0) {
     res.status(400);
     throw new Error("No sale items provided");
   }
 
+  /* ===============================
+     AUTH + STORE CONTEXT
+  ============================== */
   const adminId = req.user.adminId || req.user.id;
-  const storeId = req.user.storeId;
   const cashierId = req.user.id;
 
-  if (!adminId || !storeId) {
-    res.status(400);
-    throw new Error("Invalid user session");
+  let storeId = req.user.storeId || req.body.storeId;
+
+  if (!adminId) {
+    return res.status(401).json({
+      message: "Unauthorized: missing adminId",
+    });
   }
+
+  if (!storeId) {
+    console.warn("⚠️ Missing storeId, using default store");
+    storeId = "default-store";
+  }
+
+  /* ===============================
+     NORMALIZE PAYLOAD
+  ============================== */
+  const normalizedItems = items.map((i) => ({
+    itemId: i.itemId || i.id, // UUID from frontend
+    quantity: Number(i.quantity ?? i.qty ?? 0),
+  }));
 
   let subtotal = 0;
 
   /* ===============================
-     🔐 VALIDATE STOCK + CALCULATE
+     🔐 VALIDATE STOCK (HYBRID)
   ============================== */
-  for (const sold of items) {
-    if (!sold.itemId || !sold.quantity || sold.quantity <= 0) {
+  for (const sold of normalizedItems) {
+    if (!sold.itemId || sold.quantity <= 0) {
       res.status(400);
       throw new Error("Invalid sale item data");
     }
 
-    const item = await db.get(
-      `SELECT * FROM local_items
-       WHERE id = ? AND storeId = ? AND adminId = ? AND deleted = 0`,
-      [sold.itemId, storeId, adminId]
-    );
+    let item = null;
 
+    /* ===============================
+       1️⃣ TRY SQLITE (ONLY IF INTEGER ID)
+    ============================== */
+    if (!isNaN(Number(sold.itemId))) {
+      item = await db.get(
+        `SELECT * FROM local_items
+         WHERE id = ? AND storeId = ? AND adminId = ? AND deleted = 0`,
+        [Number(sold.itemId), storeId, adminId]
+      );
+    }
+
+    /* ===============================
+       2️⃣ FALLBACK: POSTGRES
+    ============================== */
     if (!item) {
-      res.status(403);
-      throw new Error("Invalid item or unauthorized");
+      console.warn("🌍 Fetching item from Postgres:", sold.itemId);
+
+      const pgRes = await query(
+        `
+        SELECT *
+        FROM items
+        WHERE id = $1
+        AND admin_id = $2
+        AND store_id = $3
+        AND deleted = false
+        `,
+        [sold.itemId, adminId, storeId]
+      );
+
+      if (pgRes.rows.length > 0) {
+        const pgItem = pgRes.rows[0];
+
+        /* INSERT INTO SQLITE (NO ID FIELD!) */
+        await db.run(
+          `INSERT INTO local_items (
+            name,
+            sku,
+            retailPrice,
+            quantity,
+            storeId,
+            adminId,
+            syncStatus
+          )
+          VALUES (?, ?, ?, ?, ?, ?, 'synced')`,
+          [
+            pgItem.name,
+            pgItem.sku || "",
+            Number(pgItem.retail_price || 0),
+            Number(pgItem.quantity || 0),
+            pgItem.store_id,
+            pgItem.admin_id,
+          ]
+        );
+
+        /* RE-FETCH LOCAL ROW (GET INTEGER ID) */
+        item = await db.get(
+          `SELECT * FROM local_items
+           WHERE name = ? AND storeId = ? AND adminId = ?
+           ORDER BY id DESC LIMIT 1`,
+          [pgItem.name, pgItem.store_id, pgItem.admin_id]
+        );
+      }
+    }
+
+    /* ===============================
+       ❌ STILL NOT FOUND
+    ============================== */
+    if (!item) {
+      console.error("❌ Item missing everywhere:", sold.itemId);
+      res.status(404);
+      throw new Error("Item not found in both local and remote DB");
     }
 
     if (Number(item.quantity) < Number(sold.quantity)) {
@@ -48,7 +135,17 @@ const createSale = asyncHandler(async (req, res) => {
       throw new Error(`Insufficient stock for ${item.name}`);
     }
 
-    subtotal += Number(item.retailPrice) * Number(sold.quantity);
+    
+    const price = Number(item.retail_price ?? item.retailPrice ?? 0);
+    subtotal += price * sold.quantity;
+
+
+    sold.price = price;
+    sold.localId = item.id;
+
+    /* attach resolved local item */
+    sold.localId = item.id;
+    sold.price = Number(item.retail_price);
   }
 
   const tax = 0;
@@ -56,24 +153,15 @@ const createSale = asyncHandler(async (req, res) => {
   const receiptNo = `R-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
   /* ===============================
-     🔄 ATOMIC SQLITE TRANSACTION
+     🔄 SQLITE TRANSACTION
   ============================== */
-
   await db.transaction(async () => {
-    // 1️⃣ Insert sale header
     await db.run(
       `
       INSERT INTO offline_sales (
-        receiptNo,
-        subtotal,
-        tax,
-        total,
-        paymentType,
-        paymentStatus,
-        cashierId,
-        storeId,
-        adminId,
-        syncStatus
+        receiptNo, subtotal, tax, total,
+        paymentType, paymentStatus,
+        cashierId, storeId, adminId, syncStatus
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
@@ -98,126 +186,76 @@ const createSale = asyncHandler(async (req, res) => {
 
     const saleId = saleRow.id;
 
-    /* ===============================
-       2️⃣ PROCESS EACH SOLD ITEM
-    ============================== */
-    for (const sold of items) {
+for (const sold of normalizedItems) {
+  const item = await db.get(
+    `SELECT * FROM local_items WHERE id = ?`,
+    [sold.localId]
+  );
 
-      const item = await db.get(
-        `SELECT * FROM local_items WHERE id = ?`,
-        [sold.itemId]
-      );
+  if (!item) {
+    throw new Error("Item not found during sale processing");
+  }
 
-      /* Insert relational sale_items */
-      await db.run(
-        `
-        INSERT INTO sale_items (
-          saleId, itemId, quantity, unitPrice, totalPrice
-        )
-        VALUES (?, ?, ?, ?, ?)
-        `,
-        [
-          saleId,
-          sold.itemId,
-          sold.quantity,
-          item.retailPrice,
-          item.retailPrice * sold.quantity,
-        ]
-      );
+  /* 🔥 SAFE PRICE EXTRACTION */
+  const price = Number(
+      item.retail_price ?? item.retailPrice ?? 0
+    );
 
-      /* ===== Recipe Deduction (BAR MODE) ===== */
-      const recipeRows = await db.all(
-        `SELECT * FROM recipes WHERE finishedItemId = ?`,
-        [sold.itemId]
-      );
+  /* 🚨 HARD GUARD (prevents crash forever) */
+  if (!price || isNaN(price)) {
+    console.error("❌ Invalid price in DB:", item);
 
-      if (recipeRows.length > 0) {
-        for (const r of recipeRows) {
-          const totalIngredientQty =
-            Number(r.quantityRequired) * Number(sold.quantity);
+    throw new Error(
+      `Invalid retail_price for item "${item.name}". Fix your data.`
+    );
+  }
 
-          await db.run(
-            `
-            UPDATE local_items
-            SET quantity = quantity - ?,
-                updatedAt = CURRENT_TIMESTAMP,
-                syncStatus = 'pending'
-            WHERE id = ?
-            `,
-            [totalIngredientQty, r.ingredientId]
-          );
+  /* INSERT sale_items */
+  await db.run(
+    `
+    INSERT INTO sale_items (
+      saleId, itemId, quantity, unitPrice, totalPrice
+    )
+    VALUES (?, ?, ?, ?, ?)
+    `,
+    [
+      saleId,
+      sold.localId,
+      sold.quantity,
+      price,                     // ✅ ALWAYS valid
+      price * sold.quantity,     // ✅ ALWAYS valid
+    ]
+  );
 
-          await db.run(
-            `
-            INSERT INTO stock_movements (
-              itemId, movementType, quantity, referenceId, notes
-            )
-            VALUES (?, 'sale', ?, ?, 'Recipe deduction')
-            `,
-            [r.ingredientId, -totalIngredientQty, saleId]
-          );
-        }
-      } else {
-        /* ===== Normal Stock Deduction ===== */
-        await db.run(
-          `
-          UPDATE local_items
-          SET quantity = quantity - ?,
-              updatedAt = CURRENT_TIMESTAMP,
-              syncStatus = 'pending'
-          WHERE id = ?
-          `,
-          [sold.quantity, sold.itemId]
-        );
+  /* STOCK DEDUCTION */
+  await db.run(
+    `
+    UPDATE local_items
+    SET quantity = quantity - ?,
+        updatedAt = CURRENT_TIMESTAMP,
+        syncStatus = 'pending'
+    WHERE id = ?
+    `,
+    [sold.quantity, sold.localId]
+  );
 
-        await db.run(
-          `
-          INSERT INTO stock_movements (
-            itemId, movementType, quantity, referenceId
-          )
-          VALUES (?, 'sale', ?, ?)
-          `,
-          [sold.itemId, -sold.quantity, saleId]
-        );
-      }
-
-      /* ===== Batch FIFO Deduction ===== */
-      if (item.trackBatches === 1) {
-
-        let remaining = Number(sold.quantity);
-
-        const batches = await db.all(
-          `
-          SELECT * FROM item_batches
-          WHERE itemId = ?
-          ORDER BY expiryDate ASC
-          `,
-          [sold.itemId]
-        );
-
-        for (const batch of batches) {
-          if (remaining <= 0) break;
-
-          const deduct = Math.min(batch.quantity, remaining);
-
-          await db.run(
-            `UPDATE item_batches
-             SET quantity = quantity - ?
-             WHERE id = ?`,
-            [deduct, batch.id]
-          );
-
-          remaining -= deduct;
-        }
-      }
-    }
+  /* STOCK MOVEMENT */
+  await db.run(
+    `
+    INSERT INTO stock_movements (
+      itemId, movementType, quantity, referenceId
+    )
+    VALUES (?, 'sale', ?, ?)
+    `,
+    [sold.localId, -sold.quantity, saleId]
+  );
+}
   });
 
   res.status(201).json({
-    message: "Sale completed (enterprise offline)",
+    message: "Sale completed (hybrid mode)",
     receiptNo,
     total,
-    customerName: customerName || "Walk-in Customer",
   });
 });
 
@@ -311,7 +349,7 @@ const deleteSale = asyncHandler(async (req, res) => {
   const storeId = req.query.storeId;
   const saleId = req.params.id;
 
-  const sale = db.get(
+  const sale = await db.get(
     `SELECT * FROM offline_sales
      WHERE id = ? AND storeId = ? AND adminId = ?`,
     [saleId, storeId, adminId]

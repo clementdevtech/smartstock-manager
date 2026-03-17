@@ -79,20 +79,23 @@ const CameraScanner = ({
      DETECT HANDLER
   ================================ */
 
-  const handleDetected = (code,source="camera") => {
+  const handleDetected = (code, source = "camera") => {
 
-    if(!code) return;
+  if (!code) return;
+  if (isDuplicate(code)) return;
 
-    if(isDuplicate(code)) return;
+  setScanCount(v => v + 1);
 
-    setScanCount(v=>v+1);
-
-    onDetected?.(code,{source});
-
-    if(online)
-      sendScan(code);
-
+  const result = {
+    code,
+    source
   };
+
+  onDetected?.(result);
+
+  if (online)
+    sendScan(code);
+};
 
   /* ================================
      WORKERS
@@ -178,7 +181,8 @@ const CameraScanner = ({
 
 const processFrame = async (video) => {
 
-  if (!video) return;
+  if (!video || video.videoWidth === 0 || video.videoHeight === 0)
+    return;
 
   try {
 
