@@ -126,8 +126,11 @@ function start() {
 
   // ✅ START SERVER FIRST (NO BLOCKING)
   server = app.listen(PORT, HOST, () => {
-    console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
-  });
+  console.log(`🚀 Backend running on http://${HOST}:${PORT}`);
+
+  // ✅ ADD THIS LINE
+  console.log("✅ BACKEND_READY");
+});
 
   server.on("error", err => {
     console.error("❌ Server failed to bind:", err);

@@ -26,12 +26,12 @@ const getDefaultForm = (businessType) => {
     supplier: "",
 
     /* COSTING */
-    costPrice: "", // what YOU bought it at
-    retailPrice: "", // selling price retail
-    wholesalePrice: "", // selling price wholesale
+    costPrice: 0,
+    retailPrice: 0,
+    wholesalePrice: 0,
 
     /* STOCK */
-    quantity: "",
+    quantity: 0,
     lowStockThreshold: 5,
 
     /* UNIT SYSTEM */
@@ -48,6 +48,37 @@ const getDefaultForm = (businessType) => {
     expiryDate: "",
   };
 };
+
+
+/* =====================================================
+   Normalize API Item For Form (handles legacy and new fields)
+===================================================== */
+const normalizeForForm = (item, businessType) => ({
+  ...getDefaultForm(businessType),
+
+  name: item.name || "",
+  sku: item.sku || "",
+  supplier: item.supplier || "",
+
+  costPrice: item.costPrice ?? item.cost_price ?? "",
+  retailPrice: item.retailPrice ?? item.retail_price ?? "",
+  wholesalePrice: item.wholesalePrice ?? item.wholesale_price ?? "",
+
+  quantity: item.quantity ?? "",
+  lowStockThreshold: item.lowStockThreshold ?? 5,
+
+  stockUnit: item.stockUnit || "pcs",
+  sellingUnit: item.sellingUnit || "pcs",
+
+  unitsPerPackage: item.unitsPerPackage ?? 1,
+  packageUnit: item.packageUnit || "",
+
+  minSaleQty: item.minSaleQty ?? 1,
+  saleStep: item.saleStep ?? 1,
+
+  batchNumber: item.batchNumber || "",
+  storageLocation: item.storageLocation || "",
+});
 
 
 const UNIT_OPTIONS = [
@@ -145,6 +176,17 @@ const fetchItems = async () => {
 useEffect(() => {
   if (storeId) fetchItems();
 }, [storeId]);
+
+
+useEffect(() => {
+  if (!formData.sku && formData.name) {
+    setFormData((prev) => ({
+      ...prev,
+      sku: prev.name.replace(/\s+/g, "-").toLowerCase(),
+    }));
+  }
+}, [formData.name]);
+
   /* =====================================================
      Business-aware Search
   ===================================================== */
@@ -290,7 +332,7 @@ if (Number(formData.saleStep) < 1)
       /* OPTIMISTIC UPDATE */
       setItems((prev) =>
         prev.map((i) =>
-          i.id === editingItem.id ? { ...i, ...payload } : i
+          (i._id || i.id) === (editingItem._id || editingItem.id) ? { ...i, ...payload } : i
         )
       );
     } else {
@@ -447,8 +489,8 @@ const handleCSVImport = async (file) => {
     {/* Add Item */}
     <button
       onClick={() => {
-        setEditingItem(null);
-        setFormData(getDefaultForm(businessType));
+        setEditingItem(i);
+        setFormData(normalizeForForm(i, businessType));
         setShowModal(true);
       }}
       className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg"
@@ -571,7 +613,7 @@ const handleCSVImport = async (file) => {
                       </button>
 
                       <button
-                        onClick={() => handleDelete(i.id)}
+                        onClick={() => handleDelete(i._id || i.id)}
                         className="text-red-600"
                       >
                         <Trash2 size={18} />
@@ -644,10 +686,14 @@ const InventoryForm = ({
 
 {/* Item Name */}
 <input
-  value={formData.name}
+  value={formData.name || ""}
   onChange={(e) =>
-    setFormData({ ...formData, name: e.target.value })
-  }
+  setFormData({
+    ...formData,
+    quantity: e.target.value === "" ? "" : Number(e.target.value),
+  })
+}
+  
   placeholder="Item name"
   className="w-full p-2 border rounded-md"
   required
@@ -749,7 +795,7 @@ const InventoryForm = ({
   <input
     type="number"
     placeholder="Cost price"
-    value={formData.costPrice}
+    value={formData.costPrice ?? ""}
     onChange={(e) =>
       setFormData({ ...formData, costPrice: e.target.value })
     }
@@ -760,7 +806,7 @@ const InventoryForm = ({
   <input
     type="number"
     placeholder="Wholesale price"
-    value={formData.wholesalePrice}
+    value={formData.wholesalePrice ?? ""}
     onChange={(e) =>
       setFormData({ ...formData, wholesalePrice: e.target.value })
     }
@@ -771,7 +817,7 @@ const InventoryForm = ({
   <input
     type="number"
     placeholder="Retail price"
-    value={formData.retailPrice}
+    value={formData.retailPrice ?? ""}
     onChange={(e) =>
       setFormData({ ...formData, retailPrice: e.target.value })
     }
@@ -787,7 +833,7 @@ const InventoryForm = ({
   <input
     type="number"
     placeholder="Stock Quantity"
-    value={formData.quantity}
+    value={formData.quantity ?? ""}
     onChange={(e) =>
       setFormData({ ...formData, quantity: e.target.value })
     }
