@@ -148,14 +148,14 @@ CREATE TABLE IF NOT EXISTS local_items (
 
   supplier TEXT,
 
-  admin_id TEXT NOT NULL,
-  store_id TEXT NOT NULL,
+  adminId TEXT NOT NULL,
+  storeId TEXT NOT NULL,
 
   version INTEGER DEFAULT 1,
   device_id TEXT,
   deleted INTEGER DEFAULT 0,
   retry_count INTEGER DEFAULT 0,
-  sync_status TEXT DEFAULT 'pending',
+  syncStatus TEXT DEFAULT 'pending',
   last_synced_at TEXT,
 
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -483,20 +483,19 @@ async function migrate(table, column, type = "TEXT") {
     await migrate("local_stores", "industryType");
 
     /* ===== INVENTORY UNIT SYSTEM ===== */
+   await migrate("local_items", "cost_price", "REAL DEFAULT 0");
+   await migrate("local_items", "wholesale_price", "REAL DEFAULT 0");
+   await migrate("local_items", "retail_price", "REAL DEFAULT 0");
 
-   await migrate("local_items", "costPrice", "REAL DEFAULT 0");
-   await migrate("local_items", "wholesalePrice", "REAL DEFAULT 0");
-   await migrate("local_items", "retailPrice", "REAL DEFAULT 0");
+   await migrate("local_items", "stock_unit", "TEXT DEFAULT 'pcs'");
+   await migrate("local_items", "selling_unit", "TEXT DEFAULT 'pcs'");
+   await migrate("local_items", "units_per_package", "REAL DEFAULT 1");
 
-   await migrate("local_items", "stockUnit", "TEXT DEFAULT 'pcs'");
-   await migrate("local_items", "sellingUnit", "TEXT DEFAULT 'pcs'");
-   await migrate("local_items", "unitsPerPackage", "REAL DEFAULT 1");
+   await migrate("local_items", "package_unit", "TEXT");
+   await migrate("local_items", "min_sale_qty", "REAL DEFAULT 1");
+   await migrate("local_items", "sale_step", "REAL DEFAULT 1");
 
-   await migrate("local_items", "packageUnit", "TEXT");
-   await migrate("local_items", "minSaleQty", "REAL DEFAULT 1");
-   await migrate("local_items", "saleStep", "REAL DEFAULT 1");
-
-   await migrate("local_items", "lowStockThreshold", "REAL DEFAULT 5");
+   await migrate("local_items", "low_stock_threshold", "REAL DEFAULT 5");
 
     /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
 

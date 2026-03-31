@@ -1,6 +1,6 @@
 {
   "name": "smartstock-desktop",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "private": true,
   "main": "electron/main.js",
   "author": "Clement DevTech",
@@ -26,6 +26,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "electron-log": "^5.4.3",
+    "electron-store": "^11.0.2",
     "electron-updater": "^6.7.3",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",

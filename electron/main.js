@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, session } = require("electron");
 const path = require("path");
 const http = require("http");
 const { autoUpdater } = require("electron-updater");
 const log = require("electron-log");
 const { spawn } = require("child_process");
 const fs = require("fs-extra");
+const Store = require("electron-store").default;
 
 const isDev = !app.isPackaged;
 
@@ -28,10 +29,22 @@ let updateWindow;
 app.isQuitting = false;
 
 /* ======================================================
-   🧠 UPDATE MENU STATE
+   🧠 UPDATE STATE
 ====================================================== */
 let updateState = "idle";
 let downloadProgress = 0;
+let updateTimeout;
+
+/* ======================================================
+   🪵 LOGGER SETUP (CRITICAL)
+====================================================== */
+log.transports.file.level = "info";
+autoUpdater.logger = log;
+
+/* ======================================================
+   💾 STORE
+====================================================== */
+const appStore = new Store();
 
 /* ======================================================
    🎨 ICON
@@ -50,7 +63,7 @@ function buildMenu() {
     label: "Check for Updates",
     click: () => {
       createUpdateWindow();
-      autoUpdater.checkForUpdates();
+      startUpdateCheck();
     }
   };
 
@@ -78,6 +91,31 @@ function buildMenu() {
       submenu: [updateItem, { type: "separator" }, { role: "quit" }]
     }
   ]));
+}
+
+/* ======================================================
+   🔄 SAFE UPDATE CHECK (NO MORE FREEZE)
+====================================================== */
+function startUpdateCheck() {
+  if (isDev) {
+    log.info("Skipping updates (dev mode)");
+    return;
+  }
+
+  clearTimeout(updateTimeout);
+
+  updateTimeout = setTimeout(() => {
+    log.error("Update check timeout");
+    updateState = "idle";
+    buildMenu();
+
+    sendSplash({
+      status: "Update check timed out",
+      progress: 0
+    });
+  }, 15000); // 15s timeout
+
+  autoUpdater.checkForUpdates();
 }
 
 /* ======================================================
@@ -136,10 +174,6 @@ function createMainWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      enableRemoteModule: false,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      enableWebSQL: false,
       devTools: isDev
     }
   });
@@ -157,40 +191,40 @@ function createMainWindow() {
       mainWindow.show();
     }
   });
-
-  mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith("http://localhost") && !url.startsWith("file://")) {
-      event.preventDefault();
-    }
-  });
 }
 
 /* ======================================================
-   🔒 AUTO UPDATER
+   🔒 AUTO UPDATER (FULLY FIXED)
 ====================================================== */
 if (!isDev) {
   autoUpdater.channel = UPDATE_CHANNEL;
   autoUpdater.autoDownload = false;
 
   autoUpdater.on("checking-for-update", () => {
+    clearTimeout(updateTimeout);
+
     updateState = "checking";
     buildMenu();
-    sendSplash({ status: "Checking for updates…", progress: 8 });
+
+    log.info("Checking for updates...");
+
+    sendSplash({ status: "Checking for updates…", progress: 10 });
   });
 
   autoUpdater.on("update-available", info => {
+    clearTimeout(updateTimeout);
+
     updateState = "available";
     buildMenu();
 
-    autoUpdater.downloadUpdate();
+    log.info("Update available:", info.version);
 
     sendSplash({
-      status: "Update available",
-      version: info.version,
-      progress: 15
+      status: `Update found v${info.version}`,
+      progress: 20
     });
+
+    autoUpdater.downloadUpdate();
   });
 
   autoUpdater.on("download-progress", p => {
@@ -208,8 +242,10 @@ if (!isDev) {
     updateState = "downloaded";
     buildMenu();
 
+    log.info("Update downloaded");
+
     sendSplash({
-      status: "Update ready",
+      status: "Update ready to install",
       progress: 100
     });
 
@@ -217,12 +253,31 @@ if (!isDev) {
   });
 
   autoUpdater.on("update-not-available", () => {
+    clearTimeout(updateTimeout);
+
+    log.info("No updates available");
+
     updateState = "idle";
     buildMenu();
+
+    sendSplash({
+      status: "You're up to date",
+      progress: 100
+    });
   });
 
   autoUpdater.on("error", err => {
+    clearTimeout(updateTimeout);
+
     log.error("Updater error:", err);
+
+    updateState = "idle";
+    buildMenu();
+
+    sendSplash({
+      status: "Update failed",
+      progress: 0
+    });
   });
 }
 
@@ -281,29 +336,12 @@ function waitForHealth(timeout = 30000) {
       function retry() {
         if (Date.now() - start > timeout)
           reject(new Error("Health timeout"));
-        else
-          setTimeout(check, 1000);
+        else setTimeout(check, 1000);
       }
     };
 
     check();
   });
-}
-
-/* ======================================================
-   🔄 HEARTBEAT
-====================================================== */
-function startHeartbeatMonitor() {
-  clearInterval(heartbeatTimer);
-
-  heartbeatTimer = setInterval(async () => {
-    try {
-      await waitForHealth(5000);
-    } catch {
-      log.error("Backend unresponsive → restarting");
-      await restartBackend();
-    }
-  }, 15000);
 }
 
 /* ======================================================
@@ -326,48 +364,22 @@ async function startBackend() {
         PORT: String(BACKEND_PORT),
         APP_DATA: app.getPath("userData"),
         ELECTRON_RUN: "true"
-      },
-      stdio: ["ignore", "pipe", "pipe"]
+      }
     });
 
     backendProcess.stdout.on("data", d => {
       const msg = d.toString();
       log.info("[BACKEND]", msg);
 
-      if (msg.includes("BACKEND_READY")) {
-        isReady = true;
-      }
+      if (msg.includes("BACKEND_READY")) isReady = true;
     });
 
     backendProcess.stderr.on("data", d =>
       log.error("[BACKEND ERROR]", d.toString())
     );
 
-    backendProcess.on("exit", async (code, signal) => {
-      log.error(`Backend exited: ${code} ${signal}`);
-
-      if (app.isQuitting) return;
-
-      await new Promise(r => setTimeout(r, 2000));
-
-      if (startAttempts < 5) {
-        await restartBackend();
-      } else {
-        app.quit();
-      }
-    });
-
-    const start = Date.now();
-    while (!isReady) {
-      if (Date.now() - start > 60000)
-        throw new Error("Backend ready timeout");
-      await new Promise(r => setTimeout(r, 300));
-    }
-
-    await waitForHealth(30000);
-
-    startAttempts = 0;
-    startHeartbeatMonitor();
+    // wait for backend to actually respond
+    await waitForHealth(60000);
 
     log.info("✅ Backend started");
 
@@ -378,41 +390,30 @@ async function startBackend() {
 }
 
 /* ======================================================
-   🔁 RESTART BACKEND
-====================================================== */
-async function restartBackend() {
-  clearInterval(heartbeatTimer);
-
-  if (backendProcess) {
-    backendProcess.kill("SIGTERM");
-    setTimeout(() => backendProcess.kill("SIGKILL"), 5000);
-  }
-
-  await startBackend();
-}
-
-/* ======================================================
-   🛑 STOP BACKEND
-====================================================== */
-function stopBackend() {
-  clearInterval(heartbeatTimer);
-
-  if (backendProcess) {
-    backendProcess.kill("SIGTERM");
-    setTimeout(() => backendProcess.kill("SIGKILL"), 5000);
-  }
-}
-
-/* ======================================================
    🧠 APP BOOT
 ====================================================== */
 app.whenReady().then(async () => {
+  try {
+    const currentVersion = app.getVersion();
+    const savedVersion = appStore.get("version");
+
+    if (savedVersion !== currentVersion) {
+      await session.defaultSession.clearCache();
+      await session.defaultSession.clearStorageData();
+
+      appStore.set("version", currentVersion);
+      log.info("✅ Cache cleared after update");
+    }
+  } catch (err) {
+    log.error("Cache clear failed:", err);
+  }
+
   buildMenu();
   createSplash();
 
   sendSplash({ status: "Launching SmartStock…", progress: 5 });
 
-  if (!isDev) autoUpdater.checkForUpdates();
+  if (!isDev) startUpdateCheck();
 
   await startBackend();
 
@@ -433,7 +434,7 @@ ipcMain.on("install-update", () => {
 ====================================================== */
 app.on("before-quit", () => {
   app.isQuitting = true;
-  stopBackend();
+  if (backendProcess) backendProcess.kill();
 });
 
 app.on("window-all-closed", () => {
