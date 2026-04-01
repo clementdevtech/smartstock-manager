@@ -21,22 +21,19 @@ const HEALTH_URL = `http://127.0.0.1:${BACKEND_PORT}/api/health`;
 let mainWindow;
 let splashWindow;
 let backendProcess;
-let isReady = false;
-let heartbeatTimer;
-let startAttempts = 0;
 let updateWindow;
 
-app.isQuitting = false;
+let isReady = false;
+let startAttempts = 0;
 
-/* ======================================================
-   🧠 UPDATE STATE
-====================================================== */
 let updateState = "idle";
 let downloadProgress = 0;
 let updateTimeout;
 
+app.isQuitting = false;
+
 /* ======================================================
-   🪵 LOGGER SETUP (CRITICAL)
+   🪵 LOGGER
 ====================================================== */
 log.transports.file.level = "info";
 autoUpdater.logger = log;
@@ -94,45 +91,6 @@ function buildMenu() {
 }
 
 /* ======================================================
-   🔄 SAFE UPDATE CHECK (NO MORE FREEZE)
-====================================================== */
-function startUpdateCheck() {
-  if (isDev) {
-    log.info("Skipping updates (dev mode)");
-    return;
-  }
-
-  clearTimeout(updateTimeout);
-
-  updateTimeout = setTimeout(() => {
-    log.error("Update check timeout");
-    updateState = "idle";
-    buildMenu();
-
-    sendSplash({
-      status: "Update check timed out",
-      progress: 0
-    });
-  }, 15000); // 15s timeout
-
-  autoUpdater.checkForUpdates();
-}
-
-/* ======================================================
-   🔐 SINGLE INSTANCE
-====================================================== */
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-  process.exit(0);
-}
-
-/* ======================================================
-   🧨 GLOBAL ERRORS
-====================================================== */
-process.on("uncaughtException", err => log.error("Uncaught:", err));
-process.on("unhandledRejection", err => log.error("Unhandled:", err));
-
-/* ======================================================
    🖥 SPLASH
 ====================================================== */
 function createSplash() {
@@ -157,6 +115,10 @@ function sendSplash(data) {
   if (splashWindow && !splashWindow.isDestroyed()) {
     splashWindow.webContents.send("boot-status", data);
   }
+
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    updateWindow.webContents.send("update-status", data);
+  }
 }
 
 /* ======================================================
@@ -172,7 +134,6 @@ function createMainWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
-      nodeIntegration: false,
       sandbox: true,
       devTools: isDev
     }
@@ -194,7 +155,33 @@ function createMainWindow() {
 }
 
 /* ======================================================
-   🔒 AUTO UPDATER (FULLY FIXED)
+   🔄 UPDATE CHECK
+====================================================== */
+function startUpdateCheck() {
+  if (isDev) {
+    log.info("Skipping updates (dev mode)");
+    return;
+  }
+
+  clearTimeout(updateTimeout);
+
+  updateTimeout = setTimeout(() => {
+    log.error("Update check timeout");
+
+    updateState = "idle";
+    buildMenu();
+
+    sendSplash({
+      status: "Update check timed out",
+      progress: 0
+    });
+  }, 15000);
+
+  autoUpdater.checkForUpdates();
+}
+
+/* ======================================================
+   🔒 AUTO UPDATER
 ====================================================== */
 if (!isDev) {
   autoUpdater.channel = UPDATE_CHANNEL;
@@ -207,7 +194,6 @@ if (!isDev) {
     buildMenu();
 
     log.info("Checking for updates...");
-
     sendSplash({ status: "Checking for updates…", progress: 10 });
   });
 
@@ -323,7 +309,7 @@ function getBackendEntry() {
 /* ======================================================
    🏥 HEALTH CHECK
 ====================================================== */
-function waitForHealth(timeout = 30000) {
+function waitForHealth(timeout = 60000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
 
@@ -336,7 +322,7 @@ function waitForHealth(timeout = 30000) {
       function retry() {
         if (Date.now() - start > timeout)
           reject(new Error("Health timeout"));
-        else setTimeout(check, 1000);
+        else setTimeout(check, 500);
       }
     };
 
@@ -345,46 +331,64 @@ function waitForHealth(timeout = 30000) {
 }
 
 /* ======================================================
-   🚀 START BACKEND
+   🚀 START BACKEND (FINAL)
 ====================================================== */
 async function startBackend() {
+  if (backendProcess) {
+    log.warn("Backend already running");
+    return;
+  }
+
+  startAttempts++;
+
+  const entry = getBackendEntry();
+  if (!fs.existsSync(entry)) {
+    log.error("Missing backend:", entry);
+    app.quit();
+    return;
+  }
+
+  sendSplash({ status: "Starting backend…", progress: 30 });
+
+  backendProcess = spawn("node", [entry], {
+    cwd: path.dirname(entry),
+    env: {
+      ...process.env,
+      PORT: String(BACKEND_PORT),
+      APP_DATA: app.getPath("userData"),
+      ELECTRON_RUN: "true"
+    }
+  });
+
+  backendProcess.stdout.on("data", d => {
+    const msg = d.toString();
+    log.info("[BACKEND]", msg);
+
+    if (msg.includes("BACKEND_READY")) isReady = true;
+  });
+
+  backendProcess.stderr.on("data", d =>
+    log.error("[BACKEND ERROR]", d.toString())
+  );
+
   try {
-    isReady = false;
-    startAttempts++;
+    await Promise.race([
+      waitForHealth(60000),
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error("Signal timeout")), 60000);
 
-    const entry = getBackendEntry();
-    if (!fs.existsSync(entry)) throw new Error("Missing backend");
+        backendProcess.stdout.on("data", d => {
+          if (d.toString().includes("BACKEND_READY")) {
+            clearTimeout(t);
+            resolve();
+          }
+        });
+      })
+    ]);
 
-    sendSplash({ status: "Starting backend…", progress: 30 });
-
-    backendProcess = spawn("node", [entry], {
-      cwd: path.dirname(entry),
-      env: {
-        ...process.env,
-        PORT: String(BACKEND_PORT),
-        APP_DATA: app.getPath("userData"),
-        ELECTRON_RUN: "true"
-      }
-    });
-
-    backendProcess.stdout.on("data", d => {
-      const msg = d.toString();
-      log.info("[BACKEND]", msg);
-
-      if (msg.includes("BACKEND_READY")) isReady = true;
-    });
-
-    backendProcess.stderr.on("data", d =>
-      log.error("[BACKEND ERROR]", d.toString())
-    );
-
-    // wait for backend to actually respond
-    await waitForHealth(60000);
-
-    log.info("✅ Backend started");
-
+    log.info("✅ Backend ready");
   } catch (err) {
-    log.error("Backend start failed:", err);
+    log.error("Backend failed:", err);
     app.quit();
   }
 }
@@ -398,8 +402,10 @@ app.whenReady().then(async () => {
     const savedVersion = appStore.get("version");
 
     if (savedVersion !== currentVersion) {
-      await session.defaultSession.clearCache();
-      await session.defaultSession.clearStorageData();
+      if (session?.defaultSession) {
+        await session.defaultSession.clearCache();
+        await session.defaultSession.clearStorageData();
+      }
 
       appStore.set("version", currentVersion);
       log.info("✅ Cache cleared after update");
@@ -434,7 +440,7 @@ ipcMain.on("install-update", () => {
 ====================================================== */
 app.on("before-quit", () => {
   app.isQuitting = true;
-  if (backendProcess) backendProcess.kill();
+  backendProcess?.kill("SIGTERM");
 });
 
 app.on("window-all-closed", () => {

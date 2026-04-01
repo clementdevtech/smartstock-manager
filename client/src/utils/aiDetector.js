@@ -20,11 +20,13 @@ setWasmPaths("/wasm/");
 ============================================ */
 
 async function selectBackend() {
-  // Force CPU in Electron to avoid WebGL errors
-  const preferedBackends = ["wasm", "cpu"];
+
+  const preferedBackends = ["webgl", "wasm", "cpu"];
 
   for (const backend of preferedBackends) {
+
     try {
+
       await tf.setBackend(backend);
       await tf.ready();
 
@@ -34,19 +36,26 @@ async function selectBackend() {
       if (backend === "webgl") {
         tf.env().set("WEBGL_FORCE_F16_TEXTURES", true);
         tf.env().set("WEBGL_PACK", true);
+        tf.env().set("WEBGL_RENDER_FLOAT32_CAPABLE", true);
       }
 
       return backend;
+
     } catch (err) {
+
       console.warn(`Backend ${backend} failed`, err);
+
     }
+
   }
 
-  // Fallback CPU always
+  // Final fallback
   await tf.setBackend("cpu");
   await tf.ready();
+
   backendUsed = "cpu";
   console.log("AI backend forced to CPU");
+
   return "cpu";
 }
 

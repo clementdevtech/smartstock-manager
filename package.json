@@ -1,6 +1,6 @@
 {
   "name": "smartstock-desktop",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "private": true,
   "main": "electron/main.js",
   "author": "Clement DevTech",

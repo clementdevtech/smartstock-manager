@@ -4,6 +4,8 @@ import {
   useState
 } from "react";
 
+import { BrowserMultiFormatReader } from "@zxing/browser";
+
 import {
   loadAIDetector,
   detectObjects
@@ -30,499 +32,430 @@ import { startWarehouseCameras } from "../utils/multiCameraManager";
 
 import { sendScan } from "../utils/api";
 import useOnlineStatus from "../utils/useOnlineStatus";
-import { lookupProduct } from "../utils/productLookup";
 
-const CameraScanner = ({
-  onDetected,
-  warehouseMode = false
-}) => {
+const CameraScanner = ({ onDetected, warehouseMode = false }) => {
 
   const videoRefs = useRef([]);
-  const workers = useRef([]);
-  const workerIndex = useRef(0);
   const gpuCanvas = useRef(null);
   const gpuProcessor = useRef(null);
 
-  const pipelineInterval = useRef(null);
+  const codeReader = useRef(null);
 
-  const [scanCount,setScanCount] = useState(0);
-  const online = useOnlineStatus();
+  const workers = useRef([]);
+  const workerIndex = useRef(0);
 
   const scanHistory = useRef(new Map());
+  const trackedCodes = useRef(new Map());
+  const itemCounts = useRef(new Map());
+
+  const zoomState = useRef({
+    active: false,
+    x: 0,
+    y: 0,
+    scale: 1
+  });
 
   const hardwareBuffer = useRef("");
   const lastKeyTime = useRef(0);
-  const frameCounter = useRef(0);
-  const lastObjectDetect = useRef(0);
-  const lastShelfDetect = useRef(0);
-  const lastProductDetect = useRef(0);
+
+  const lastAI = useRef(0);
+
+  const [scanCount, setScanCount] = useState(0);
+  const [, forceRender] = useState(0);
+
+  const online = useOnlineStatus();
 
   /* ================================
      DUPLICATE FILTER
   ================================ */
 
   const isDuplicate = (code) => {
+    const now = Date.now();
+    if (scanHistory.current.has(code) &&
+        now - scanHistory.current.get(code) < 120)
+      return true;
 
+    scanHistory.current.set(code, now);
+    return false;
+  };
+
+  /* ================================
+     TRACKING + CONFIDENCE
+  ================================ */
+
+  const updateTracking = (code, bbox) => {
     const now = Date.now();
 
-    if(
-      scanHistory.current.has(code) &&
-      now - scanHistory.current.get(code) < 500
-    ) return true;
+    const prev = trackedCodes.current.get(code) || {
+      hits: 0,
+      confidence: 0
+    };
 
-    scanHistory.current.set(code,now);
-    return false;
+    const hits = prev.hits + 1;
+    const confidence = Math.min(1, hits / 5);
 
+    trackedCodes.current.set(code, {
+      bbox,
+      lastSeen: now,
+      hits,
+      confidence
+    });
+
+    trackedCodes.current.forEach((v, k) => {
+      if (now - v.lastSeen > 1000) {
+        trackedCodes.current.delete(k);
+      }
+    });
+  };
+
+  /* ================================
+     ITEM COUNTING AI
+  ================================ */
+
+  const updateItemCount = (code) => {
+    const now = Date.now();
+
+    const entry = itemCounts.current.get(code) || {
+      count: 0,
+      lastSeen: now
+    };
+
+    entry.count += 1;
+    entry.lastSeen = now;
+
+    itemCounts.current.set(code, entry);
+
+    itemCounts.current.forEach((v, k) => {
+      if (now - v.lastSeen > 2000) {
+        itemCounts.current.delete(k);
+      }
+    });
+  };
+
+  const getClusteredCounts = () => {
+    const result = {};
+    itemCounts.current.forEach((v, k) => {
+      result[k] = v.count;
+    });
+    return result;
   };
 
   /* ================================
      DETECT HANDLER
   ================================ */
 
-  const handleDetected = (code, source = "camera") => {
+  const handleDetected = (code, source = "camera", bbox = null) => {
 
-  if (!code) return;
-  if (isDuplicate(code)) return;
+    if (!code) return;
+    if (isDuplicate(code)) return;
 
-  setScanCount(v => v + 1);
+    if (bbox) updateTracking(code, bbox);
 
-  const result = {
-    code,
-    source
+    updateItemCount(code);
+
+    setScanCount(v => v + 1);
+
+    onDetected?.({
+      code,
+      source,
+      tracked: trackedCodes.current.get(code),
+      count: itemCounts.current.get(code)?.count || 1
+    });
+
+    if (online) sendScan(code);
+
+    forceRender(v => v + 1);
   };
 
-  onDetected?.(result);
-
-  if (online)
-    sendScan(code);
-};
-
   /* ================================
-     WORKERS
+     FAST SCAN + AUTO ZOOM
   ================================ */
 
-  const initWorkers = () => {
+  const fastScan = async (video) => {
+    try {
+      const result =
+        await codeReader.current.decodeFromVideoElement(video);
 
-    const threads =
-      navigator.hardwareConcurrency || 4;
+      if (result) {
 
-    for(let i=0;i<threads;i++){
+        const points = result.getResultPoints?.() || [];
 
-      const worker = new Worker(
-        "/barcodeWorker.js",
-        { type:"module" }
-      );
+        if (points.length) {
+          const x = points[0].getX();
+          const y = points[0].getY();
 
-      worker.onmessage = ({data}) => {
+          zoomState.current = {
+            active: true,
+            x,
+            y,
+            scale: 1.8
+          };
 
-        if(!data.code) return;
+          handleDetected(result.getText(), "zxing", { x, y });
+        }
 
-        handleDetected(data.code,"worker");
+      } else {
+        zoomState.current.scale *= 0.95;
+        if (zoomState.current.scale < 1.05) {
+          zoomState.current.active = false;
+          zoomState.current.scale = 1;
+        }
+      }
 
-      };
+    } catch {}
+  };
 
-      workers.current.push(worker);
-    }
+  /* ================================
+     MULTI BARCODE
+  ================================ */
 
+  const multiScan = async (video) => {
+    try {
+      const regions = await detectBarcodeRegions(video);
+      if (!regions?.length) return;
+
+      const processed =
+        gpuProcessor.current?.process(video);
+
+      const bitmap =
+        await createImageBitmap(processed || video);
+
+      const crops =
+        await cropRegions(bitmap, regions);
+
+      for (const crop of crops) {
+        if (!crop) continue;
+
+        const worker =
+          workers.current[
+            workerIndex.current++ %
+            workers.current.length
+          ];
+
+        worker.postMessage(crop, [crop]);
+      }
+
+    } catch {}
+  };
+
+  /* ================================
+     AI LAYER
+  ================================ */
+
+  const runAI = async (video) => {
+    const now = Date.now();
+    if (now - lastAI.current < 300) return;
+    lastAI.current = now;
+
+    try {
+      if (warehouseMode) {
+        await detectShelves(video);
+      }
+
+      const objects = await detectObjects(video);
+
+      if (objects?.length) {
+        const product =
+          await recognizeProduct(video);
+
+        if (product) {
+          onDetected?.({
+            product: product.product,
+            confidence: product.confidence
+          });
+        }
+      }
+
+    } catch {}
   };
 
   /* ================================
      HARDWARE SCANNER
   ================================ */
 
-  const handleHardwareScan = (e)=>{
-
+  const handleHardwareScan = (e) => {
     const now = Date.now();
 
-    if(now-lastKeyTime.current>50)
-      hardwareBuffer.current="";
+    if (now - lastKeyTime.current > 50)
+      hardwareBuffer.current = "";
 
-    lastKeyTime.current=now;
+    lastKeyTime.current = now;
 
-    if(e.key==="Enter"){
-
-      if(hardwareBuffer.current.length>5){
-
+    if (e.key === "Enter") {
+      if (hardwareBuffer.current.length > 5) {
         handleDetected(
           hardwareBuffer.current,
           "hardware"
         );
-
       }
-
-      hardwareBuffer.current="";
+      hardwareBuffer.current = "";
       return;
     }
 
-    if(/^[\w\d]$/.test(e.key))
-      hardwareBuffer.current+=e.key;
-
+    if (/^[\w\d\-]$/.test(e.key))
+      hardwareBuffer.current += e.key;
   };
 
   /* ================================
-     SEND FRAME TO WORKER
+     WORKERS
   ================================ */
 
-  const sendToWorker = (bitmap) => {
+  const initWorkers = () => {
+    const threads =
+      navigator.hardwareConcurrency || 4;
 
-    const worker =
-      workers.current[
-        workerIndex.current++
-        % workers.current.length
-      ];
+    for (let i = 0; i < threads; i++) {
+      const worker = new Worker(
+        "/barcodeWorker.js",
+        { type: "module" }
+      );
 
-    worker.postMessage(bitmap,[bitmap]);
+      worker.onmessage = ({ data }) => {
+        if (!data.code) return;
+        handleDetected(data.code, "worker");
+      };
 
+      workers.current.push(worker);
+    }
   };
 
   /* ================================
-     FRAME PROCESSING
+     LOOP
   ================================ */
 
-const processFrame = async (video) => {
+  const loop = () => {
 
-  if (!video || video.videoWidth === 0 || video.videoHeight === 0)
-    return;
+    videoRefs.current.forEach((video) => {
 
-  try {
+      if (!video || video.readyState < 2) return;
 
-    frameCounter.current++;
+      fastScan(video);
+      multiScan(video);
+      runAI(video);
 
-    // Skip frames to reduce CPU load
-    if (frameCounter.current % 2 !== 0) return;
+    });
 
-    /* =========================
-       GPU PREPROCESS
-    ========================= */
-
-    const processed =
-      gpuProcessor.current?.process(video);
-
-    if (!processed) return;
-
-    const bitmap =
-      await createImageBitmap(processed);
-
-    /* =========================
-       BARCODE REGION DETECTION
-    ========================= */
-
-    let regions = [];
-
-    try {
-
-      regions =
-        await detectBarcodeRegions(video);
-
-    } catch (err) {
-
-      console.warn("Barcode region detection failed", err);
-
-    }
-
-    /* =========================
-       CROP REGIONS
-    ========================= */
-
-    const crops =
-      await cropRegions(bitmap, regions);
-
-    /* =========================
-       SEND CROPS TO WORKERS
-    ========================= */
-
-    for (const c of crops) {
-
-      if (c)
-        sendToWorker(c);
-
-    }
-
-    /* =========================
-       SHELF DETECTION (1 FPS)
-    ========================= */
-
-    const now = Date.now();
-
-    if (gpuProcessor.current.shelfDetectionEnabled && now - lastShelfDetect.current > 1000) {
-        try {
-            const shelves = await detectShelves(video);
-          } catch (err) {
-            console.warn("Shelf detection failed", err);
-          }
-            lastShelfDetect.current = now;
-        }
-
-    /* =========================
-       OBJECT DETECTION (5 FPS)
-    ========================= */
-
-    if (now - lastObjectDetect.current > 200) {
-
-      let objects = [];
-
-      try {
-
-        objects =
-          await detectObjects(video);
-
-      } catch (err) {
-
-        console.warn("Object detection failed", err);
-
-      }
-
-      lastObjectDetect.current = now;
-
-      /* =========================
-         PRODUCT RECOGNITION
-      ========================= */
-
-      if (objects.length &&
-          now - lastProductDetect.current > 800) {
-
-        try {
-
-          const product =
-            await recognizeProduct(video);
-
-          if (product) {
-
-            onDetected?.({
-              product: product.product,
-              confidence: product.confidence
-            });
-
-          }
-
-        } catch (err) {
-
-          console.warn("Product recognition failed", err);
-
-        }
-
-        lastProductDetect.current = now;
-
-      }
-
-    }
-
-  } catch (err) {
-
-    console.warn("Frame processing error:", err);
-
-  }
-
-};
-
-  /* ================================
-     PIPELINE LOOP
-  ================================ */
-
-  const startPipeline = () => {
-
-    pipelineInterval.current =
-      setInterval(()=>{
-
-        videoRefs.current.forEach(v=>{
-
-          if(v && v.readyState>2)
-            processFrame(v);
-
-        });
-
-      },40); // ~60fps
-
+    requestAnimationFrame(loop);
   };
 
   /* ================================
      CAMERA INIT
   ================================ */
 
-const initCameras = async () => {
+  const initCameras = async () => {
 
-  let streams = [];
-
-  try {
+    let streams = [];
 
     if (warehouseMode) {
-
-      // Warehouse: multiple cameras
       streams = await startWarehouseCameras(4);
-
     } else {
-
-      // Get available cameras
-      const devices = await navigator.mediaDevices.enumerateDevices();
-
-      const cameras = devices.filter(d => d.kind === "videoinput");
-
-      if (!cameras.length) {
-        console.error("No camera found");
-        return;
-      }
-
-      // Try cameras until one works
-      let stream = null;
-
-      for (const cam of cameras) {
-
-        try {
-
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                 width: { ideal: 1280 },
-                 height: { ideal: 720 },
-                 frameRate: { ideal: 30, max: 60 },
-                 facingMode: "environment",
-                 focusMode: "continuous",
-                 exposureMode: "continuous",
-                 whiteBalanceMode: "continuous"
-            },
-            audio: false
-          });
-
-          console.log("Camera started:", cam.label);
-          break;
-
-        } catch (err) {
-
-          console.warn("Camera failed:", cam.label, err);
-
-        }
-
-      }
-
-      if (!stream) {
-        console.error("All cameras failed to start");
-        return;
-      }
+      const stream =
+        await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 60 },
+            focusMode: "continuous"
+          },
+          audio: false
+        });
 
       streams = [stream];
-
     }
 
     streams.forEach((stream, i) => {
-
       const video = videoRefs.current[i];
-
-      if (!video) {
-        console.warn("Video element not ready", i);
-        return;
-      }
-
+      if (!video) return;
       video.srcObject = stream;
-
-      video.onloadedmetadata = async () => {
-        try {
-          await video.play();
-        } catch (err) {
-          console.warn("Video play failed", err);
-        }
-      };
-
+      video.play().catch(() => {});
     });
-
-  } catch (err) {
-
-    console.error("Camera initialization failed:", err);
-
-  }
-
-};
+  };
 
   /* ================================
-     INIT SYSTEM
+     INIT
   ================================ */
 
   useEffect(() => {
-  const init = async () => {
-    await loadAIDetector();
-    await initFastBarcodeDetector();
-    const shelfModel = null;
-    await loadProductModel();
 
-    gpuProcessor.current = new GPUProcessor(gpuCanvas.current);
+    const init = async () => {
 
-    initWorkers();
+      codeReader.current =
+        new BrowserMultiFormatReader();
 
-    try {
+      await loadAIDetector();
+      await initFastBarcodeDetector();
+      await loadProductModel();
+      await loadShelfModel();
+
+      gpuProcessor.current =
+        new GPUProcessor(gpuCanvas.current);
+
+      initWorkers();
       await initCameras();
-    } catch (err) {
-      console.warn("Camera initialization failed:", err);
-    }
 
-    startPipeline();
+      loop();
+    };
 
-    // store whether shelf detection is enabled
-    gpuProcessor.current.shelfDetectionEnabled = !!shelfModel;
-  };
-
-  init();
-}, []);
-
-  /* ================================
-     HARDWARE LISTENER
-  ================================ */
-
-  useEffect(()=>{
+    init();
 
     document.addEventListener(
       "keydown",
       handleHardwareScan
     );
 
-    return ()=>{
-
+    return () => {
+      workers.current.forEach(w => w.terminate());
       document.removeEventListener(
         "keydown",
         handleHardwareScan
       );
-
-      clearInterval(pipelineInterval.current);
-
-      workers.current.forEach(w=>w.terminate());
-
     };
 
-  },[]);
+  }, []);
 
   /* ================================
      UI
   ================================ */
 
-  return(
+  return (
+    <div className={warehouseMode
+      ? "grid grid-cols-2 gap-2"
+      : "flex justify-center"}>
 
-    <div className={ warehouseMode ? "grid grid-cols-2 gap-2" : "flex justify-center"}>
+      <canvas ref={gpuCanvas} style={{ display: "none" }} />
 
-      <canvas
-        ref={gpuCanvas}
-        style={{display:"none"}}
-      />
-
-      {(warehouseMode ? [0,1,2,3] : [0]).map((i)=>(
+      {(warehouseMode ? [0,1,2,3] : [0]).map(i => (
 
         <video
           key={i}
-          ref={el=>videoRefs.current[i]=el}
+          ref={el => videoRefs.current[i] = el}
           autoPlay
           playsInline
           className="w-full border rounded"
+          style={{
+            transform: zoomState.current.active
+              ? `scale(${zoomState.current.scale}) translate(-${zoomState.current.x / 4}px, -${zoomState.current.y / 4}px)`
+              : "scale(1)"
+          }}
         />
 
       ))}
 
       <div className="col-span-2 text-center p-2 bg-gray-100 rounded">
+        Scans: <strong>{scanCount}</strong>
 
-        Warehouse scans:
-        <strong>{scanCount}</strong>
-
+        <div className="text-xs mt-2">
+          {Object.entries(getClusteredCounts()).map(([code, count]) => (
+            <div key={code}>
+              {code}: {count}
+            </div>
+          ))}
+        </div>
       </div>
 
     </div>
-
   );
-
 };
 
 export default CameraScanner;

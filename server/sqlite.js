@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS local_items (
   syncStatus TEXT DEFAULT 'pending',
   last_synced_at TEXT,
 
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  updatedAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_local_items_store
@@ -497,6 +497,8 @@ async function migrate(table, column, type = "TEXT") {
 
    await migrate("local_items", "low_stock_threshold", "REAL DEFAULT 5");
 
+   await migrate("local_items", "updatedAt", "TEXT");
+
     /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
 
     await migrate("local_users", "phone");
@@ -529,6 +531,13 @@ async function migrate(table, column, type = "TEXT") {
     } catch (err) {
       console.log("Unit migration skipped");
     }
+
+     await db.run(`
+  UPDATE local_items
+  SET updatedAt = updated_at
+  WHERE updatedAt IS NULL
+`);
+
     /* =====================================================
        INDEXES (SAFE)
     ===================================================== */

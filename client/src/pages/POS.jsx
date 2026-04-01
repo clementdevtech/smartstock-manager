@@ -357,57 +357,87 @@ const addToCart = (item, qty = null) => {
      SCAN HANDLER
   ===================================================== */
 
-  const handleScan = useCallback(
+const beepRef = useRef(null);
 
-    async (raw, meta = {}) => {
+useEffect(() => {
+  beepRef.current = new Audio("../assets/beep.mp3");
+}, []);
 
-      const code =
-        typeof raw === "string"
-          ? raw
-          : raw?.code ||
-            raw?.barcode ||
-            raw?.sku ||
-            "";
+const handleScan = useCallback((raw, meta = {}) => {
 
-      if (!code) return;
+  const code =
+    typeof raw === "string"
+      ? raw
+      : raw?.code ||
+        raw?.barcode ||
+        raw?.sku ||
+        "";
 
-      const { bestMatch, score } =
-        aiSmartMatch(code);
+  if (!code) return;
 
-      setScanScore(score);
+  /* ===============================
+     ⚡ ULTRA-FAST PATH (O(1))
+  =============================== */
 
-      if (bestMatch && score > 0.6) {
+  const exactItem = barcodeIndex.get(code);
 
-        addToCart(bestMatch);
+  if (exactItem) {
 
-        navigator.vibrate?.(40);
+    addToCart(exactItem);
 
-        new Audio("/beep.mp3")
-          .play()
-          .catch(() => {});
+    // 🔥 instant vibration
+    navigator.vibrate?.(30);
 
-        setToast({
-          message: `Added ${bestMatch.name}`,
-          type:
-            score > 0.9
-              ? "success"
-              : "warning"
-        });
+    // 🔥 reuse audio (NO DELAY)
+    if (beepRef.current) {
+      beepRef.current.currentTime = 0;
+      beepRef.current.play().catch(() => {});
+    }
 
-      } else {
+    setScanScore(1);
 
-        setToast({
-          message: "Unknown barcode",
-          type: "error"
-        });
+    setToast({
+      message: `Added ${exactItem.name}`,
+      type: "success"
+    });
 
-      }
+    return; // 🚀 STOP HERE (no AI)
+  }
 
-    },
+  /* ===============================
+     🧠 FALLBACK AI MATCH
+  =============================== */
 
-    [items]
+  const { bestMatch, score } = aiSmartMatch(code);
 
-  );
+  setScanScore(score);
+
+  if (bestMatch && score > 0.6) {
+
+    addToCart(bestMatch);
+
+    navigator.vibrate?.(30);
+
+    if (beepRef.current) {
+      beepRef.current.currentTime = 0;
+      beepRef.current.play().catch(() => {});
+    }
+
+    setToast({
+      message: `Added ${bestMatch.name}`,
+      type: score > 0.9 ? "success" : "warning"
+    });
+
+  } else {
+
+    setToast({
+      message: "Unknown barcode",
+      type: "error"
+    });
+
+  }
+
+}, [items, barcodeIndex]);
 
   useEnterpriseScanner(handleScan);
 
