@@ -360,7 +360,7 @@ const addToCart = (item, qty = null) => {
 const beepRef = useRef(null);
 
 useEffect(() => {
-  beepRef.current = new Audio("../assets/beep.mp3");
+  beepRef.current = new Audio("./beep.mp3");
 }, []);
 
 const handleScan = useCallback((raw, meta = {}) => {

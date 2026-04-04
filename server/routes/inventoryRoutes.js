@@ -15,9 +15,36 @@ const {
 } = require("../controllers/inventoryController");
 
 const { protect } = require("../middleware/authMiddleware");
-const multer = require("multer");
 
-const upload = multer({ dest: "uploads/" });
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const os = require("os");
+
+/* =====================================================
+   SAFE UPLOAD DIRECTORY (PRODUCTION READY)
+===================================================== */
+
+const uploadDir = path.join(
+  process.env.APPDATA || os.homedir(),
+  "SmartStockPOS",
+  "uploads"
+);
+
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+
+const upload = multer({ storage });
 
 /* =====================================================
    INVENTORY ROUTES (PROTECTED)
@@ -39,15 +66,21 @@ router
   .put(protect, updateItem)
   .delete(protect, deleteItem);
 
+// Stock movements
+router.post("/stock-movements", protect, createStockMovement);
 
-router.post("/stock-movements", createStockMovement);
-router.post("/erp-sync", erpSync);
-router.post("/850", processEdi850);
+// ERP Sync
+router.post("/erp-sync", protect, erpSync);
+
+// EDI 850
+router.post("/850", protect, processEdi850);
+
+// CSV Import
 router.post(
-  "/api/items/import/csv",
+  "/import/csv",
+  protect,
   upload.single("file"),
   importItemsFromCSV
 );
 
 module.exports = router;
-

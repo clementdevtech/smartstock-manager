@@ -68,12 +68,14 @@ function AppContent() {
             {/* 🔁 ROOT ROUTE */}
             <Route
               path="/"
-              element={
-                user
-                  ? <Navigate to="/pos" replace />
-                  : <Navigate to="/register" replace />
-              }
-            />
+                element={
+                  !user
+                     ? <Navigate to="/register" replace />
+                     : user.role === "admin"
+                     ? <Navigate to="/dashboard" replace />
+                     : <Navigate to="/login" replace />
+                  }
+                />
 
             {/* 🧾 POS — All authenticated users */}
             <Route
@@ -152,11 +154,15 @@ function AppContent() {
 
             {/* ⚠️ FALLBACK */}
             <Route
-              path="*"
-              element={
-                <Navigate to={user ? "/pos" : "/register"} replace />
-              }
-            />
+              path="/"
+                element={
+                  !user
+                     ? <Navigate to="/register" replace />
+                     : user.role === "admin"
+                     ? <Navigate to="/dashboard" replace />
+                     : <Navigate to="/login" replace />
+                  }
+                />
 
           </Routes>
         </Suspense>

@@ -62,7 +62,8 @@
     "asar": true,
     "asarUnpack": [
       "server/**/*",
-      "node_modules/**/*"
+      "node_modules/**/*",
+      "client/dist/**/*"
     ],
     "directories": {
       "output": "dist",

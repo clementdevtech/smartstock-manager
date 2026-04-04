@@ -143,7 +143,19 @@ function createMainWindow() {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-    mainWindow.loadFile(path.join(app.getAppPath(), "client/dist/index.html"));
+
+    // ✅ PRODUCTION SAFE PATH
+    const indexPath = path.join(
+      process.resourcesPath,
+      "app.asar.unpacked",
+      "client",
+      "dist",
+      "index.html"
+    );
+
+    console.log("Loading UI from:", indexPath);
+
+    mainWindow.loadFile(indexPath);
   }
 
   mainWindow.once("ready-to-show", () => {
