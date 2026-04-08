@@ -23,9 +23,6 @@ let splashWindow;
 let backendProcess;
 let updateWindow;
 
-let isReady = false;
-let startAttempts = 0;
-
 let updateState = "idle";
 let downloadProgress = 0;
 let updateTimeout;
@@ -112,13 +109,8 @@ function createSplash() {
 }
 
 function sendSplash(data) {
-  if (splashWindow && !splashWindow.isDestroyed()) {
-    splashWindow.webContents.send("boot-status", data);
-  }
-
-  if (updateWindow && !updateWindow.isDestroyed()) {
-    updateWindow.webContents.send("update-status", data);
-  }
+  splashWindow?.webContents?.send("boot-status", data);
+  updateWindow?.webContents?.send("update-status", data);
 }
 
 /* ======================================================
@@ -143,8 +135,6 @@ function createMainWindow() {
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-
-    // ✅ PRODUCTION SAFE PATH
     const indexPath = path.join(
       process.resourcesPath,
       "app.asar.unpacked",
@@ -153,7 +143,11 @@ function createMainWindow() {
       "index.html"
     );
 
-    console.log("Loading UI from:", indexPath);
+    if (!fs.existsSync(indexPath)) {
+      log.error("❌ UI build missing:", indexPath);
+      app.quit();
+      return;
+    }
 
     mainWindow.loadFile(indexPath);
   }
@@ -164,29 +158,24 @@ function createMainWindow() {
       mainWindow.show();
     }
   });
+
+  mainWindow.webContents.on("did-fail-load", (e, code, desc) => {
+    log.error("❌ UI failed to load:", code, desc);
+  });
 }
 
 /* ======================================================
    🔄 UPDATE CHECK
 ====================================================== */
 function startUpdateCheck() {
-  if (isDev) {
-    log.info("Skipping updates (dev mode)");
-    return;
-  }
+  if (isDev) return;
 
   clearTimeout(updateTimeout);
 
   updateTimeout = setTimeout(() => {
-    log.error("Update check timeout");
-
     updateState = "idle";
     buildMenu();
-
-    sendSplash({
-      status: "Update check timed out",
-      progress: 0
-    });
+    sendSplash({ status: "Update timeout", progress: 0 });
   }, 15000);
 
   autoUpdater.checkForUpdates();
@@ -200,28 +189,15 @@ if (!isDev) {
   autoUpdater.autoDownload = false;
 
   autoUpdater.on("checking-for-update", () => {
-    clearTimeout(updateTimeout);
-
     updateState = "checking";
     buildMenu();
-
-    log.info("Checking for updates...");
-    sendSplash({ status: "Checking for updates…", progress: 10 });
+    sendSplash({ status: "Checking updates…", progress: 10 });
   });
 
   autoUpdater.on("update-available", info => {
-    clearTimeout(updateTimeout);
-
     updateState = "available";
     buildMenu();
-
-    log.info("Update available:", info.version);
-
-    sendSplash({
-      status: `Update found v${info.version}`,
-      progress: 20
-    });
-
+    sendSplash({ status: `Update v${info.version}`, progress: 20 });
     autoUpdater.downloadUpdate();
   });
 
@@ -229,7 +205,6 @@ if (!isDev) {
     updateState = "downloading";
     downloadProgress = p.percent;
     buildMenu();
-
     sendSplash({
       status: `Downloading ${Math.round(p.percent)}%`,
       progress: p.percent
@@ -239,43 +214,22 @@ if (!isDev) {
   autoUpdater.on("update-downloaded", () => {
     updateState = "downloaded";
     buildMenu();
-
-    log.info("Update downloaded");
-
-    sendSplash({
-      status: "Update ready to install",
-      progress: 100
-    });
+    sendSplash({ status: "Ready to install", progress: 100 });
 
     if (FORCE_UPDATE) autoUpdater.quitAndInstall();
   });
 
   autoUpdater.on("update-not-available", () => {
-    clearTimeout(updateTimeout);
-
-    log.info("No updates available");
-
     updateState = "idle";
     buildMenu();
-
-    sendSplash({
-      status: "You're up to date",
-      progress: 100
-    });
+    sendSplash({ status: "Up to date", progress: 100 });
   });
 
   autoUpdater.on("error", err => {
-    clearTimeout(updateTimeout);
-
     log.error("Updater error:", err);
-
     updateState = "idle";
     buildMenu();
-
-    sendSplash({
-      status: "Update failed",
-      progress: 0
-    });
+    sendSplash({ status: "Update failed", progress: 0 });
   });
 }
 
@@ -297,25 +251,21 @@ function createUpdateWindow() {
   });
 
   updateWindow.loadFile(path.join(__dirname, "update.html"));
-
-  updateWindow.on("closed", () => {
-    updateWindow = null;
-  });
+  updateWindow.on("closed", () => (updateWindow = null));
 }
 
 /* ======================================================
    🔌 BACKEND ENTRY
 ====================================================== */
 function getBackendEntry() {
-  if (isDev)
-    return path.join(__dirname, "..", "server", "server.js");
-
-  return path.join(
-    process.resourcesPath,
-    "app.asar.unpacked",
-    "server",
-    "server.js"
-  );
+  return isDev
+    ? path.join(__dirname, "..", "server", "server.js")
+    : path.join(
+        process.resourcesPath,
+        "app.asar.unpacked",
+        "server",
+        "server.js"
+      );
 }
 
 /* ======================================================
@@ -326,15 +276,17 @@ function waitForHealth(timeout = 60000) {
     const start = Date.now();
 
     const check = () => {
-      http.get(HEALTH_URL, res => {
-        if (res.statusCode === 200) resolve();
-        else retry();
-      }).on("error", retry);
+      http
+        .get(HEALTH_URL, res => {
+          if (res.statusCode === 200) return resolve();
+          retry();
+        })
+        .on("error", retry);
 
       function retry() {
         if (Date.now() - start > timeout)
-          reject(new Error("Health timeout"));
-        else setTimeout(check, 500);
+          return reject(new Error("Health timeout"));
+        setTimeout(check, 500);
       }
     };
 
@@ -343,19 +295,15 @@ function waitForHealth(timeout = 60000) {
 }
 
 /* ======================================================
-   🚀 START BACKEND (FINAL)
+   🚀 START BACKEND (FIXED)
 ====================================================== */
 async function startBackend() {
-  if (backendProcess) {
-    log.warn("Backend already running");
-    return;
-  }
-
-  startAttempts++;
+  if (backendProcess) return;
 
   const entry = getBackendEntry();
+
   if (!fs.existsSync(entry)) {
-    log.error("Missing backend:", entry);
+    log.error("❌ Backend missing:", entry);
     app.quit();
     return;
   }
@@ -372,41 +320,30 @@ async function startBackend() {
     }
   });
 
-  backendProcess.stdout.on("data", d => {
-    const msg = d.toString();
-    log.info("[BACKEND]", msg);
-
-    if (msg.includes("BACKEND_READY")) isReady = true;
-  });
+  backendProcess.stdout.on("data", d =>
+    log.info("[BACKEND]", d.toString())
+  );
 
   backendProcess.stderr.on("data", d =>
     log.error("[BACKEND ERROR]", d.toString())
   );
 
   try {
-    await Promise.race([
-      waitForHealth(60000),
-      new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error("Signal timeout")), 60000);
-
-        backendProcess.stdout.on("data", d => {
-          if (d.toString().includes("BACKEND_READY")) {
-            clearTimeout(t);
-            resolve();
-          }
-        });
-      })
-    ]);
+    await waitForHealth(60000);
 
     log.info("✅ Backend ready");
+
+    // 🔥 CRITICAL FIX → give backend time to fully stabilize
+    await new Promise(res => setTimeout(res, 1000));
+
   } catch (err) {
-    log.error("Backend failed:", err);
+    log.error("❌ Backend failed:", err);
     app.quit();
   }
 }
 
 /* ======================================================
-   🧠 APP BOOT
+   🧠 APP BOOT (FIXED FLOW)
 ====================================================== */
 app.whenReady().then(async () => {
   try {
@@ -414,13 +351,11 @@ app.whenReady().then(async () => {
     const savedVersion = appStore.get("version");
 
     if (savedVersion !== currentVersion) {
-      if (session?.defaultSession) {
-        await session.defaultSession.clearCache();
-        await session.defaultSession.clearStorageData();
-      }
+      await session.defaultSession.clearCache();
+      await session.defaultSession.clearStorageData();
 
       appStore.set("version", currentVersion);
-      log.info("✅ Cache cleared after update");
+      log.info("✅ Cache cleared");
     }
   } catch (err) {
     log.error("Cache clear failed:", err);
@@ -435,7 +370,10 @@ app.whenReady().then(async () => {
 
   await startBackend();
 
-  sendSplash({ status: "Loading UI…", progress: 85 });
+  sendSplash({ status: "Preparing UI…", progress: 85 });
+
+  // 🔥 CRITICAL FIX → prevent incomplete UI render
+  await new Promise(res => setTimeout(res, 800));
 
   createMainWindow();
 });

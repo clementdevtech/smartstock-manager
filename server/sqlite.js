@@ -16,7 +16,12 @@ function getAppDataDir() {
   }
 
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", appName);
+    return path.join(
+      os.homedir(),
+      "Library",
+      "Application Support",
+      appName
+    );
   }
 
   return path.join(os.homedir(), ".config", appName);
@@ -29,6 +34,9 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+/* =====================================================
+   DATABASE INIT
+===================================================== */
 
 let db;
 let rawDb;
@@ -39,6 +47,7 @@ if (isElectron) {
   rawDb = new BetterSqlite3(DB_PATH);
   rawDb.pragma("journal_mode = WAL");
   rawDb.pragma("foreign_keys = ON");
+  rawDb.pragma("synchronous = NORMAL");
 
   console.log("📦 SQLite initialized (Electron):", DB_PATH);
 
@@ -57,9 +66,8 @@ if (isElectron) {
   console.log("📦 SQLite initialized (Web):", DB_PATH);
 }
 
-
 /* =====================================================
-   CORE TABLES (MERGED)
+   EXEC WRAPPER
 ===================================================== */
 
 function exec(sql) {
@@ -71,6 +79,10 @@ function exec(sql) {
       : rawDb.serialize(() => rawDb.run(sql));
   }
 }
+
+/* =====================================================
+   TABLES
+===================================================== */
 
 exec(`
 
@@ -113,9 +125,8 @@ CREATE TABLE IF NOT EXISTS local_users (
   CHECK (role = 'user')
 );
 
-
 /* =========================
-   INVENTORY 
+   INVENTORY
 ========================= */
 CREATE TABLE IF NOT EXISTS local_items (
   id INTEGER PRIMARY KEY,
@@ -173,8 +184,6 @@ ON local_items (syncStatus);
 CREATE INDEX IF NOT EXISTS idx_local_items_sku
 ON local_items (sku);
 
-
-
 /* =========================
    ITEM BATCHES
 ========================= */
@@ -204,7 +213,7 @@ CREATE TABLE IF NOT EXISTS recipes (
 );
 
 /* =========================
-   SALES HEADER
+   SALES
 ========================= */
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY,
@@ -224,9 +233,6 @@ CREATE TABLE IF NOT EXISTS offline_sales (
   syncedAt TEXT
 );
 
-/* =========================
-   SALE LINE ITEMS
-========================= */
 CREATE TABLE IF NOT EXISTS sale_items (
   id INTEGER PRIMARY KEY,
   saleId INTEGER NOT NULL,
@@ -266,47 +272,6 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
 );
 
 /* =========================
-   INVENTORY ADJUSTMENTS
-========================= */
-CREATE TABLE IF NOT EXISTS inventory_adjustments (
-  id INTEGER PRIMARY KEY,
-  postgresId TEXT,
-  itemId INTEGER,
-  storeId TEXT,
-  adminId TEXT,
-  type TEXT,
-  quantityChange REAL,
-  reason TEXT,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-  syncStatus TEXT DEFAULT 'pending'
-);
-
-/* =========================
-   RECEIPTS
-========================= */
-CREATE TABLE IF NOT EXISTS receipts (
-  id INTEGER PRIMARY KEY,
-  saleId INTEGER,
-  receiptData TEXT,
-  printed INTEGER DEFAULT 0,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-/* =========================
-   ROOMS (HOTEL)
-========================= */
-CREATE TABLE IF NOT EXISTS rooms (
-  id INTEGER PRIMARY KEY,
-  postgresId TEXT,
-  roomNumber TEXT NOT NULL,
-  status TEXT DEFAULT 'available',
-  pricePerNight REAL NOT NULL,
-  storeId TEXT NOT NULL,
-  syncStatus TEXT DEFAULT 'pending',
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-/* =========================
    CASHIER SHIFTS
 ========================= */
 CREATE TABLE IF NOT EXISTS cashier_shifts (
@@ -342,56 +307,12 @@ CREATE TABLE IF NOT EXISTS z_reports (
   syncStatus TEXT DEFAULT 'pending'
 );
 
-/* =========================
-   VERIFICATION CODES
-========================= */
-CREATE TABLE IF NOT EXISTS verification_codes (
-  id INTEGER PRIMARY KEY,
-  email TEXT,
-  code TEXT,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
-/* =========================
-   OFFLINE LOGOS
-========================= */
-CREATE TABLE IF NOT EXISTS offline_logos (
-  id INTEGER PRIMARY KEY,
-  store_name TEXT NOT NULL,
-  local_path TEXT NOT NULL,
-  syncStatus TEXT DEFAULT 'pending',
-  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  syncedAt DATETIME,
-  cloudinary_url TEXT,
-  cloudinary_public_id TEXT
-);
-
-
-/* =========================
-   SALES TARGETS (OFFLINE)
-========================= */
-CREATE TABLE IF NOT EXISTS local_sales_targets (
-  id INTEGER PRIMARY KEY,
-  postgresId TEXT,
-  adminId TEXT NOT NULL,
-  period TEXT NOT NULL, -- daily, weekly, monthly
-  targetAmount REAL NOT NULL,
-  generatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-  syncStatus TEXT DEFAULT 'pending'
-);
-
-CREATE INDEX IF NOT EXISTS idx_local_sales_targets_admin
-ON local_sales_targets (adminId);
-
-CREATE INDEX IF NOT EXISTS idx_local_sales_targets_period
-ON local_sales_targets (period);
-
 `);
 
-
 /* =====================================================
-   DB WRAPPER (MUST COME BEFORE MIGRATIONS)
+   DB WRAPPER
 ===================================================== */
+
 db = {
   run(sql, params = []) {
     if (isElectron) {
@@ -453,10 +374,10 @@ db = {
   raw: rawDb
 };
 
-
 /* =====================================================
-   🔥 BACKWARD-SAFE MIGRATIONS
+   MIGRATIONS
 ===================================================== */
+
 async function migrate(table, column, type = "TEXT") {
   try {
     const cols = await db.all(`PRAGMA table_info(${table})`);
@@ -467,92 +388,26 @@ async function migrate(table, column, type = "TEXT") {
       await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
   } catch (err) {
-    console.error(`❌ Migration failed for ${table}.${column}`, err);
+    console.error(`❌ Migration failed`, err);
   }
 }
 
-
 /* =====================================================
-   🚀 RUN MIGRATIONS (SAFE + ORDERED)
+   RUN MIGRATIONS
 ===================================================== */
+
 (async () => {
   try {
-
-    /* ===== ENTERPRISE MIGRATIONS ===== */
-
-    await migrate("local_stores", "industryType");
-
-    /* ===== INVENTORY UNIT SYSTEM ===== */
-   await migrate("local_items", "cost_price", "REAL DEFAULT 0");
-   await migrate("local_items", "wholesale_price", "REAL DEFAULT 0");
-   await migrate("local_items", "retail_price", "REAL DEFAULT 0");
-
-   await migrate("local_items", "stock_unit", "TEXT DEFAULT 'pcs'");
-   await migrate("local_items", "selling_unit", "TEXT DEFAULT 'pcs'");
-   await migrate("local_items", "units_per_package", "REAL DEFAULT 1");
-
-   await migrate("local_items", "package_unit", "TEXT");
-   await migrate("local_items", "min_sale_qty", "REAL DEFAULT 1");
-   await migrate("local_items", "sale_step", "REAL DEFAULT 1");
-
-   await migrate("local_items", "low_stock_threshold", "REAL DEFAULT 5");
-
-   await migrate("local_items", "updatedAt", "TEXT");
-
-    /* ===== NON-DESTRUCTIVE MIGRATIONS ===== */
 
     await migrate("local_users", "phone");
     await migrate("local_users", "country");
     await migrate("local_users", "logoUrl");
-    await migrate("local_users", "syncStatus");
-    await migrate("local_users", "reset_password_token");
-    await migrate("local_users", "reset_password_expire");
-    await migrate("local_users", "role", "TEXT DEFAULT 'user'");
+
+    await migrate("local_items", "updatedAt");
 
     await migrate("offline_sales", "postgresId");
-    await migrate("offline_sales", "version", "INTEGER DEFAULT 1");
-
-    await migrate("cashier_shifts", "adminId");
-    await migrate("z_reports", "adminId");
 
     console.log("✅ All migrations complete");
-    
-
-    /* =====================================================
-   🔄 AUTO-UPGRADE OLD UNIT COLUMN
-===================================================== */
-
-   try {
-      await db.run(`
-          UPDATE local_items
-          SET stockUnit = unit
-          WHERE stockUnit IS NULL OR stockUnit = ''
-      `);
-    } catch (err) {
-      console.log("Unit migration skipped");
-    }
-
-     await db.run(`
-  UPDATE local_items
-  SET updatedAt = updated_at
-  WHERE updatedAt IS NULL
-`);
-
-    /* =====================================================
-       INDEXES (SAFE)
-    ===================================================== */
-    await db.run(`
-      CREATE INDEX IF NOT EXISTS idx_local_items_sync
-      ON local_items (syncStatus);
-    `);
-
-    /* =====================================================
-       🧹 AUTO-CLEANUP
-    ===================================================== */
-    await db.run(`
-      DELETE FROM local_users
-      WHERE role != 'user';
-    `);
 
   } catch (err) {
     console.error("❌ Migration system failed:", err);

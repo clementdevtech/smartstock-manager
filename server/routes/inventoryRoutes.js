@@ -12,6 +12,7 @@ const {
   erpSync,
   processEdi850,
   importItemsFromCSV,
+  getWeeklyBestItems
 } = require("../controllers/inventoryController");
 
 const { protect } = require("../middleware/authMiddleware");
@@ -35,52 +36,135 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+/* =====================================================
+   MULTER STORAGE
+===================================================== */
+
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + "-" + file.originalname);
+    const safeName = file.originalname.replace(/\s+/g, "-");
+    cb(null, `${Date.now()}-${safeName}`);
   },
 });
 
-const upload = multer({ storage });
+/* =====================================================
+   FILE FILTER (CSV ONLY)
+===================================================== */
+
+const fileFilter = (req, file, cb) => {
+  const allowed = [".csv"];
+
+  const ext = path.extname(file.originalname).toLowerCase();
+
+  if (!allowed.includes(ext)) {
+    return cb(new Error("Only CSV files allowed"));
+  }
+
+  cb(null, true);
+};
+
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB
+  },
+});
 
 /* =====================================================
    INVENTORY ROUTES (PROTECTED)
 ===================================================== */
 
-// Get all items for current store
+/* ===============================
+   ITEMS
+=============================== */
+
+// Get all items / Create item
 router
   .route("/")
   .get(protect, getItems)
   .post(protect, createItem);
 
-// Barcode / SKU scan (POS & inventory lookup)
+/* ===============================
+   BARCODE / SCAN
+=============================== */
+
 router.get("/scan/:sku", protect, getItemByBarcode);
 
-// Single item by ID
+/* ===============================
+   SINGLE ITEM
+=============================== */
+
 router
   .route("/:id")
   .get(protect, getItemById)
   .put(protect, updateItem)
   .delete(protect, deleteItem);
 
-// Stock movements
-router.post("/stock-movements", protect, createStockMovement);
+/* ===============================
+   STOCK MOVEMENTS
+=============================== */
 
-// ERP Sync
-router.post("/erp-sync", protect, erpSync);
+router.post(
+  "/stock-movements",
+  protect,
+  createStockMovement
+);
 
-// EDI 850
-router.post("/850", protect, processEdi850);
+/* ===============================
+   WEEKLY BEST ITEMS
+=============================== */
 
-// CSV Import
+router.get(
+  "/analytics/weekly-best",
+  protect,
+  getWeeklyBestItems
+);
+
+/* ===============================
+   ERP SYNC
+=============================== */
+
+router.post(
+  "/erp-sync",
+  protect,
+  erpSync
+);
+
+/* ===============================
+   EDI 850
+=============================== */
+
+router.post(
+  "/edi/850",
+  protect,
+  processEdi850
+);
+
+/* ===============================
+   CSV IMPORT
+=============================== */
+
 router.post(
   "/import/csv",
   protect,
   upload.single("file"),
   importItemsFromCSV
 );
+
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
+
+router.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    service: "inventory",
+    timestamp: new Date(),
+  });
+});
 
 module.exports = router;
