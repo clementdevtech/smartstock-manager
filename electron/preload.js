@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  checkUpdates: () => ipcRenderer.invoke("check-for-updates")
-});
+  isDesktop: true, // ✅ CRITICAL FLAG
 
+  checkUpdates: () => ipcRenderer.invoke("check-for-updates"),
+
+  installUpdate: () => ipcRenderer.send("install-update")
+});

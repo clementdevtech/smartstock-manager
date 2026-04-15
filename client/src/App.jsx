@@ -39,7 +39,6 @@ function AppContent() {
   const { user, loading } = useContext(AuthContext);
   const location = useLocation();
 
-  /* 🔍 Normalize path for HashRouter & BrowserRouter */
   const currentPath = location.pathname;
 
   /* 🧱 Hide layout on auth-related pages */
@@ -68,14 +67,14 @@ function AppContent() {
             {/* 🔁 ROOT ROUTE */}
             <Route
               path="/"
-                element={
-                  !user
-                     ? <Navigate to="/register" replace />
-                     : user.role === "admin"
-                     ? <Navigate to="/dashboard" replace />
-                     : <Navigate to="/login" replace />
-                  }
-                />
+              element={
+                !user
+                  ? <Navigate to="/register" replace />
+                  : user.role === "admin"
+                  ? <Navigate to="/dashboard" replace />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
             {/* 🧾 POS — All authenticated users */}
             <Route
@@ -152,17 +151,17 @@ function AppContent() {
             <Route path="/verify-reset-code" element={<VerifyResetCode />} />
             <Route path="/reset-password/:token" element={<ResetPassword />} />
 
-            {/* ⚠️ FALLBACK */}
+            {/* ✅ FINAL FALLBACK (CRITICAL FIX) */}
             <Route
-              path="/"
-                element={
-                  !user
-                     ? <Navigate to="/register" replace />
-                     : user.role === "admin"
-                     ? <Navigate to="/dashboard" replace />
-                     : <Navigate to="/login" replace />
-                  }
-                />
+              path="*"
+              element={
+                !user
+                  ? <Navigate to="/register" replace />
+                  : user.role === "admin"
+                  ? <Navigate to="/dashboard" replace />
+                  : <Navigate to="/login" replace />
+              }
+            />
 
           </Routes>
         </Suspense>
@@ -177,7 +176,7 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <BusinessProvider> 
+      <BusinessProvider>
         <ToastProvider>
           <AppContent />
           <Toaster />

@@ -109,12 +109,17 @@ function createSplash() {
 }
 
 function sendSplash(data) {
-  splashWindow?.webContents?.send("boot-status", data);
-  updateWindow?.webContents?.send("update-status", data);
+  if (splashWindow && !splashWindow.isDestroyed()) {
+    splashWindow.webContents.send("boot-status", data);
+  }
+
+  if (updateWindow && !updateWindow.isDestroyed()) {
+    updateWindow.webContents.send("update-status", data);
+  }
 }
 
 /* ======================================================
-   🖥 MAIN WINDOW
+   🖥 MAIN WINDOW (FIXED)
 ====================================================== */
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -127,13 +132,12 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       sandbox: true,
-      devTools: isDev
+      devTools: true // 🔥 ENABLE TEMP DEBUG
     }
   });
 
   if (isDev) {
     mainWindow.loadURL("http://localhost:5173");
-    mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     const indexPath = path.join(
       process.resourcesPath,
@@ -152,16 +156,27 @@ function createMainWindow() {
     mainWindow.loadFile(indexPath);
   }
 
-  mainWindow.once("ready-to-show", () => {
-    if (!FORCE_UPDATE) {
-      splashWindow?.destroy();
-      mainWindow.show();
-    }
+  // 🔥 CRITICAL: wait for FULL load
+  mainWindow.webContents.once("did-finish-load", () => {
+    log.info("✅ UI fully loaded");
+
+    setTimeout(() => {
+      if (!FORCE_UPDATE) {
+        if (splashWindow && !splashWindow.isDestroyed()) {
+          splashWindow.close();
+        }
+
+        mainWindow.show();
+      }
+    }, 300); // buffer for React hydration
   });
 
   mainWindow.webContents.on("did-fail-load", (e, code, desc) => {
     log.error("❌ UI failed to load:", code, desc);
   });
+
+  // 🔥 DEBUG
+  mainWindow.webContents.openDevTools({ mode: "detach" });
 }
 
 /* ======================================================
@@ -295,7 +310,7 @@ function waitForHealth(timeout = 60000) {
 }
 
 /* ======================================================
-   🚀 START BACKEND (FIXED)
+   🚀 START BACKEND
 ====================================================== */
 async function startBackend() {
   if (backendProcess) return;
@@ -328,22 +343,14 @@ async function startBackend() {
     log.error("[BACKEND ERROR]", d.toString())
   );
 
-  try {
-    await waitForHealth(60000);
+  await waitForHealth(60000);
 
-    log.info("✅ Backend ready");
-
-    // 🔥 CRITICAL FIX → give backend time to fully stabilize
-    await new Promise(res => setTimeout(res, 1000));
-
-  } catch (err) {
-    log.error("❌ Backend failed:", err);
-    app.quit();
-  }
+  log.info("✅ Backend ready");
+  sendSplash({ status: "Backend ready", progress: 70 });
 }
 
 /* ======================================================
-   🧠 APP BOOT (FIXED FLOW)
+   🧠 APP BOOT
 ====================================================== */
 app.whenReady().then(async () => {
   try {
@@ -370,10 +377,7 @@ app.whenReady().then(async () => {
 
   await startBackend();
 
-  sendSplash({ status: "Preparing UI…", progress: 85 });
-
-  // 🔥 CRITICAL FIX → prevent incomplete UI render
-  await new Promise(res => setTimeout(res, 800));
+  sendSplash({ status: "Loading interface…", progress: 90 });
 
   createMainWindow();
 });
@@ -383,6 +387,11 @@ app.whenReady().then(async () => {
 ====================================================== */
 ipcMain.on("install-update", () => {
   autoUpdater.quitAndInstall();
+});
+
+ipcMain.handle("check-for-updates", () => {
+  createUpdateWindow();
+  startUpdateCheck();
 });
 
 /* ======================================================

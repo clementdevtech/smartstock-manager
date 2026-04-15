@@ -3,13 +3,13 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 export default defineConfig(({ mode }) => {
-  // ✅ Load env properly
   const env = loadEnv(mode, process.cwd(), "");
 
   const API_BASE = env.VITE_API_URL || "http://localhost:3333";
 
   return {
-    base: "./", // REQUIRED for Electron
+    /* 🔥 CRITICAL FIX FOR ELECTRON */
+    base: "./",
 
     plugins: [react()],
 
@@ -19,14 +19,7 @@ export default defineConfig(({ mode }) => {
       },
     },
 
-    optimizeDeps: {
-      include: [
-         "@tensorflow/tfjs",
-         "@tensorflow/tfjs-backend-webgl",
-         "@tensorflow-models/coco-ssd",
-         "@tensorflow-models/mobilenet"
-        ]
-      },
+    optimizeDeps: {},
 
     server: {
       port: 5173,
@@ -40,6 +33,16 @@ export default defineConfig(({ mode }) => {
 
     build: {
       outDir: "dist",
+
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            vendor: ["react", "react-dom"],
+          },
+        },
+      },
+
+      chunkSizeWarningLimit: 1000,
     },
   };
 });
