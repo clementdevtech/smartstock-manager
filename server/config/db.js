@@ -10,17 +10,19 @@ let retryTimer = null;
 async function connectDB() {
   if (!process.env.DATABASE_URL) {
     console.warn("⚠️ DATABASE_URL not set — skipping Postgres");
+    console.log("DATABASE_URL should be in the format: postgres://user:password@host:port/database");
     return;
   }
 
   try {
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
+  user: "postgres.ydxtxwtoenjqvkhggaxk",
+  password: "smartstockapplications@", // ✅ raw (no encoding needed)
+  host: "aws-1-eu-west-1.pooler.supabase.com",
+  port: 6543,
+  database: "postgres",
+  ssl: { rejectUnauthorized: false },
+});
 
     // 🔥 Test connection
     const client = await pool.connect();
