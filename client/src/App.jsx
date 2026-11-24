@@ -1,13 +1,16 @@
 import React, { Suspense, lazy, useContext } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { CircleHelp } from "lucide-react";
 import Navbar from "./components/Navbar";
 import Footer from "./components/Footer";
 import AdminRoute from "./components/AdminRoute";
 import ProtectedRoute from "./components/ProtectedRoute";
+import OnboardingGuide from "./components/OnboardingGuide";
 import { AuthProvider, AuthContext } from "./context/AuthContext";
 import { ToastProvider } from "@/components/ui/toast";
 import { Toaster } from "./components/ui/toaster";
 import { BusinessProvider } from "./context/BusinessContext";
+import { pageGuides } from "./lib/pageGuides";
 
 /* ⚡ Lazy-loaded pages */
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -17,6 +20,7 @@ const POS = lazy(() => import("./pages/POS"));
 const Reports = lazy(() => import("./pages/Reports"));
 const Backup = lazy(() => import("./pages/Backup"));
 const Settings = lazy(() => import("./pages/Settings"));
+const Operations = lazy(() => import("./pages/Operations"));
 const Login = lazy(() => import("./pages/Login"));
 const Register = lazy(() => import("./pages/Register"));
 
@@ -40,6 +44,10 @@ function AppContent() {
   const location = useLocation();
 
   const currentPath = location.pathname;
+  const guide = Object.values(pageGuides).find((item) => {
+    const routePath = `/${item.pageKey}`;
+    return currentPath === routePath || currentPath.startsWith(`${routePath}/`);
+  });
 
   /* 🧱 Hide layout on auth-related pages */
   const authPages = [
@@ -47,7 +55,12 @@ function AppContent() {
     "/register",
     "/forgot-password",
     "/verify-reset-code",
+    "/reset-password",
   ];
+
+  /* 📖 Reopen the current page guide (used by the Help buttons) */
+  const reopenGuide = () =>
+    window.dispatchEvent(new Event("smartstock:open-guide"));
 
   const hideLayout = authPages.some((path) =>
     currentPath.startsWith(path)
@@ -62,8 +75,32 @@ function AppContent() {
 
       <main className="flex-grow p-4 md:p-6 lg:p-8">
         <Suspense fallback={<LoadingScreen />}>
-          <Routes>
+          {guide && (
+            <>
+              <OnboardingGuide
+                key={guide.pageKey}
+                pageKey={guide.pageKey}
+                steps={guide.steps}
+                nextPage={guide.nextPage}
+                nextPageLabel={guide.nextPageLabel}
+                title={guide.title}
+              />
 
+              {/* 📖 Re-launch button - the guide is always one click away */}
+              <button
+                type="button"
+                onClick={reopenGuide}
+                title="Reopen this page's guided tour"
+                aria-label="Reopen guided tour"
+                className="fixed bottom-4 left-4 z-[75] flex items-center gap-2 rounded-full bg-slate-900/90 px-4 py-2 text-sm font-medium text-white shadow-lg transition hover:bg-slate-700 dark:bg-white/90 dark:text-slate-900 dark:hover:bg-white"
+              >
+                <CircleHelp size={16} />
+                Guide
+              </button>
+            </>
+          )}
+
+          <Routes>
             {/* 🔁 ROOT ROUTE */}
             <Route
               path="/"
@@ -138,6 +175,15 @@ function AppContent() {
               element={
                 <AdminRoute>
                   <Settings />
+                </AdminRoute>
+              }
+            />
+
+            <Route
+              path="/operations"
+              element={
+                <AdminRoute>
+                  <Operations />
                 </AdminRoute>
               }
             />

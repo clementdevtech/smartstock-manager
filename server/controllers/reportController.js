@@ -3,6 +3,85 @@ const { query } = require("../config/db");
 const sqlite = require("../sqlite");
 const { Parser } = require("json2csv");
 
+exports.financialSummary = asyncHandler(async (req, res) => {
+  const { adminId, storeId } = req.user;
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const from = String(req.query.from || `${currentMonth}-01`);
+  const to = String(req.query.to || new Date().toISOString().slice(0, 10));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) {
+    res.status(400);
+    throw new Error("Provide a valid date range");
+  }
+
+  const sales = sqlite.all(
+    `SELECT currency,
+       COALESCE(SUM(subtotal - discountAmount), 0) AS revenue,
+       COALESCE(SUM(tax), 0) AS taxCollected,
+       COALESCE(SUM(total), 0) AS grossReceipts,
+       COALESCE(SUM(grossProfit), 0) AS grossProfit,
+       COALESCE(SUM(amountPaid), 0) AS collected,
+       COUNT(*) AS transactions
+     FROM offline_sales
+     WHERE adminId = ? AND storeId = ? AND COALESCE(deleted, 0) = 0
+       AND DATE(createdAt) BETWEEN DATE(?) AND DATE(?)
+     GROUP BY currency`,
+    [adminId, storeId, from, to]
+  );
+  const expenses = sqlite.all(
+    `SELECT currency, COALESCE(SUM(amount), 0) AS expenses
+     FROM local_expenses
+     WHERE adminId = ? AND storeId = ? AND paidAt IS NOT NULL
+       AND DATE(paidAt) BETWEEN DATE(?) AND DATE(?)
+     GROUP BY currency`,
+    [adminId, storeId, from, to]
+  );
+  const supplierPayments = sqlite.all(
+    `SELECT currency, COALESCE(SUM(amount), 0) AS supplierPayments
+     FROM supplier_payments
+     WHERE adminId = ? AND storeId = ? AND DATE(paidAt) BETWEEN DATE(?) AND DATE(?)
+     GROUP BY currency`,
+    [adminId, storeId, from, to]
+  );
+  const outstanding = sqlite.all(
+    `SELECT currency, COALESCE(SUM(total - amountPaid), 0) AS receivables
+     FROM offline_sales
+     WHERE adminId = ? AND storeId = ? AND COALESCE(deleted, 0) = 0
+       AND paymentStatus != 'paid'
+     GROUP BY currency`,
+    [adminId, storeId]
+  );
+
+  const currencyCodes = new Set([
+    ...sales.map((row) => row.currency || "KES"),
+    ...expenses.map((row) => row.currency || "KES"),
+    ...supplierPayments.map((row) => row.currency || "KES"),
+    ...outstanding.map((row) => row.currency || "KES"),
+  ]);
+  const byCurrency = [...currencyCodes].map((currency) => {
+    const sale = sales.find((row) => (row.currency || "KES") === currency) || {};
+    const expense = expenses.find((row) => (row.currency || "KES") === currency) || {};
+    const supplier = supplierPayments.find((row) => (row.currency || "KES") === currency) || {};
+    const credit = outstanding.find((row) => (row.currency || "KES") === currency) || {};
+    const grossProfit = Number(sale.grossProfit || 0);
+    const paidExpenses = Number(expense.expenses || 0);
+    return {
+      currency,
+      revenue: Number(sale.revenue || 0),
+      taxCollected: Number(sale.taxCollected || 0),
+      grossReceipts: Number(sale.grossReceipts || 0),
+      collected: Number(sale.collected || 0),
+      grossProfit,
+      expenses: paidExpenses,
+      netProfit: grossProfit - paidExpenses,
+      supplierPayments: Number(supplier.supplierPayments || 0),
+      receivables: Number(credit.receivables || 0),
+      transactions: Number(sale.transactions || 0),
+    };
+  });
+
+  res.json({ from, to, basis: "cash expenses; cost of goods recognized at sale", byCurrency });
+});
+
 /* =====================================================
    📊 BALANCE SHEET (ANY DATE RANGE)
 ===================================================== */

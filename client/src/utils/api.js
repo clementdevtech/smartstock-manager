@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_URL;
+const API_BASE = window.electronAPI?.isDesktop
+  ? "http://127.0.0.1:3333"
+  : import.meta.env.VITE_API_URL || "";
 
 export const api = async (url, method = "GET", body) => {
   const token =
@@ -17,11 +19,7 @@ export const api = async (url, method = "GET", body) => {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    // ❌ NO INTERNET
-    return {
-      offline: true,
-      message: "No internet connection",
-    };
+    throw new Error("SmartStock server is unreachable. Your data was not submitted; retry when the server is available.");
   }
 
   const text = await res.text();
@@ -37,10 +35,7 @@ export const api = async (url, method = "GET", body) => {
 
   // 🟡 SERVICE DOWN (NOT OFFLINE)
   if (res.status === 503) {
-    return {
-      unavailable: true,
-      message: data.message || "Service temporarily unavailable",
-    };
+    throw new Error(data.message || "Service temporarily unavailable");
   }
 
   // 🔴 REAL ERRORS

@@ -6,6 +6,7 @@ const log = require("electron-log");
 const { spawn } = require("child_process");
 const fs = require("fs-extra");
 const Store = require("electron-store").default;
+const secureStore = require("./secureStore");
 
 const isDev = !app.isPackaged;
 
@@ -132,7 +133,7 @@ function createMainWindow() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       sandbox: true,
-      devTools: true // 🔥 ENABLE TEMP DEBUG
+      devTools: isDev
     }
   });
 
@@ -175,8 +176,7 @@ function createMainWindow() {
     log.error("❌ UI failed to load:", code, desc);
   });
 
-  // 🔥 DEBUG
-  mainWindow.webContents.openDevTools({ mode: "detach" });
+  if (isDev) mainWindow.webContents.openDevTools({ mode: "detach" });
 }
 
 /* ======================================================
@@ -325,14 +325,51 @@ async function startBackend() {
 
   sendSplash({ status: "Starting backend…", progress: 30 });
 
-  backendProcess = spawn("node", [entry], {
+  const secureConfig = secureStore.getAll();
+  const backendEnv = {
+    ...process.env,
+    PORT: String(BACKEND_PORT),
+    APP_DATA: process.env.SMARTSTOCK_APP_DATA || process.env.APP_DATA || app.getPath("userData"),
+    ELECTRON_RUN: "true",
+    SMARTSTOCK_JWT_SECRET: secureConfig.SMARTSTOCK_JWT_SECRET || process.env.SMARTSTOCK_JWT_SECRET,
+    SMARTSTOCK_DATABASE_URL: secureConfig.SMARTSTOCK_DATABASE_URL || process.env.SMARTSTOCK_DATABASE_URL,
+    SMARTSTOCK_CLIENT_ORIGIN: secureConfig.SMARTSTOCK_CLIENT_ORIGIN || process.env.SMARTSTOCK_CLIENT_ORIGIN,
+    SMARTSTOCK_CLOUDINARY_CLOUD_NAME: secureConfig.SMARTSTOCK_CLOUDINARY_CLOUD_NAME || process.env.SMARTSTOCK_CLOUDINARY_CLOUD_NAME,
+    SMARTSTOCK_CLOUDINARY_API_KEY: secureConfig.SMARTSTOCK_CLOUDINARY_API_KEY || process.env.SMARTSTOCK_CLOUDINARY_API_KEY,
+    SMARTSTOCK_CLOUDINARY_API_SECRET: secureConfig.SMARTSTOCK_CLOUDINARY_API_SECRET || process.env.SMARTSTOCK_CLOUDINARY_API_SECRET,
+    ZOHO_ACCOUNTS_HOST: secureConfig.ZOHO_ACCOUNTS_HOST || process.env.ZOHO_ACCOUNTS_HOST,
+    ZOHO_CLIENT_ID: secureConfig.ZOHO_CLIENT_ID || process.env.ZOHO_CLIENT_ID,
+    ZOHO_CLIENT_SECRET: secureConfig.ZOHO_CLIENT_SECRET || process.env.ZOHO_CLIENT_SECRET,
+    ZOHO_FROM: secureConfig.ZOHO_FROM || process.env.ZOHO_FROM,
+    ZOHO_MAIL_HOST: secureConfig.ZOHO_MAIL_HOST || process.env.ZOHO_MAIL_HOST,
+    ZOHO_REDIRECT_URI: secureConfig.ZOHO_REDIRECT_URI || process.env.ZOHO_REDIRECT_URI,
+    ZOHO_REFRESH_TOKEN: secureConfig.ZOHO_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN,
+    SMARTSTOCK_POSTGRES_ONLINE: secureConfig.SMARTSTOCK_POSTGRES_ONLINE || process.env.SMARTSTOCK_POSTGRES_ONLINE,
+    SMARTSTOCK_PGSSL: secureConfig.SMARTSTOCK_PGSSL || process.env.SMARTSTOCK_PGSSL,
+    SMARTSTOCK_PGSSL_REJECT_UNAUTHORIZED: secureConfig.SMARTSTOCK_PGSSL_REJECT_UNAUTHORIZED || process.env.SMARTSTOCK_PGSSL_REJECT_UNAUTHORIZED,
+  };
+
+  const requiredSecureSecrets = [
+    "SMARTSTOCK_JWT_SECRET",
+    "SMARTSTOCK_DATABASE_URL",
+  ];
+
+  const missingRequiredSecureSecrets = requiredSecureSecrets.filter(
+    key => !backendEnv[key] || !String(backendEnv[key]).trim()
+  );
+
+  if (app.isPackaged && missingRequiredSecureSecrets.length > 0) {
+    throw new Error(
+      `Missing required secure config: ${missingRequiredSecureSecrets.join(", ")}. Set them in the OS keychain before launching the app.`
+    );
+  }
+
+  delete backendEnv.ELECTRON_RUN_AS_NODE;
+  backendEnv.ELECTRON_RUN_AS_NODE = "1";
+  backendProcess = spawn(process.execPath, [entry], {
     cwd: path.dirname(entry),
-    env: {
-      ...process.env,
-      PORT: String(BACKEND_PORT),
-      APP_DATA: app.getPath("userData"),
-      ELECTRON_RUN: "true"
-    }
+    stdio: ["ignore", "pipe", "pipe"],
+    env: backendEnv,
   });
 
   backendProcess.stdout.on("data", d =>
@@ -342,6 +379,9 @@ async function startBackend() {
   backendProcess.stderr.on("data", d =>
     log.error("[BACKEND ERROR]", d.toString())
   );
+  backendProcess.on("exit", code => {
+    if (!app.isQuitting) log.error("Backend exited unexpectedly:", code);
+  });
 
   await waitForHealth(60000);
 
@@ -380,6 +420,9 @@ app.whenReady().then(async () => {
   sendSplash({ status: "Loading interface…", progress: 90 });
 
   createMainWindow();
+}).catch(err => {
+  log.error("Application startup failed:", err);
+  app.quit();
 });
 
 /* ======================================================

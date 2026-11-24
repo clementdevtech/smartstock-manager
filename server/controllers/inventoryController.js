@@ -1,4 +1,5 @@
 const asyncHandler = require("express-async-handler");
+const crypto = require("crypto");
 const { query } = require("../config/db");
 const sqlite = require("../sqlite");
 const sendEmail = require("../utils/email");
@@ -120,7 +121,70 @@ const getItems = asyncHandler(async (req, res) => {
     [adminId, storeId]
   );
 
-  res.json(rows);
+  for (const remote of rows) {
+    const cached = sqlite.get(
+      `SELECT id, syncStatus FROM local_items WHERE postgres_id = ? AND adminId = ? AND storeId = ?`,
+      [String(remote.id), adminId, storeId]
+    );
+    if (cached) {
+      if (cached.syncStatus === "synced") {
+        sqlite.run(
+          `UPDATE local_items SET sku = ?, barcode = ?, name = ?, category = ?,
+            cost_price = ?, wholesale_price = ?, retail_price = ?, quantity = ?,
+            low_stock_threshold = ?, stock_unit = ?, selling_unit = ?,
+            updatedAt = CURRENT_TIMESTAMP
+           WHERE id = ? AND adminId = ? AND storeId = ? AND syncStatus = 'synced'`,
+          [remote.sku, remote.barcode || null, remote.name, remote.category || "other",
+            Number(remote.cost_price ?? remote.wholesale_price ?? 0),
+            Number(remote.wholesale_price || 0), Number(remote.retail_price || 0),
+            Number(remote.quantity || 0), Number(remote.low_stock_threshold || 5),
+            remote.stock_unit || remote.unit || "pcs", remote.selling_unit || remote.unit || "pcs",
+            cached.id, adminId, storeId]
+        );
+      }
+      continue;
+    }
+
+    sqlite.run(
+      `INSERT INTO local_items (
+        postgres_id, sku, barcode, name, category, cost_price,
+        wholesale_price, retail_price, quantity, low_stock_threshold,
+        stock_unit, selling_unit, adminId, storeId, syncStatus
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+      [
+        String(remote.id), remote.sku, remote.barcode || null, remote.name,
+        remote.category || "other", Number(remote.cost_price ?? remote.wholesale_price ?? 0),
+        Number(remote.wholesale_price || 0), Number(remote.retail_price || 0),
+        Number(remote.quantity || 0), Number(remote.low_stock_threshold || 5),
+        remote.stock_unit || remote.unit || "pcs", remote.selling_unit || remote.unit || "pcs",
+        adminId, storeId,
+      ]
+    );
+  }
+
+  const localByRemoteId = new Map(
+    localItems
+      .filter((item) => item.postgres_id && item.syncStatus !== "synced")
+      .map((item) => [String(item.postgres_id), item])
+  );
+  const remoteIds = new Set(rows.map((item) => String(item.id)));
+  const merged = rows.map((remote) => {
+    const local = localByRemoteId.get(String(remote.id));
+    if (!local) return remote;
+    return {
+      ...remote,
+      quantity: Number(local.quantity),
+      cost_price: Number(local.cost_price || 0),
+      retail_price: Number(local.retail_price || 0),
+      wholesale_price: Number(local.wholesale_price || 0),
+      syncStatus: local.syncStatus,
+    };
+  });
+  for (const local of localItems) {
+    if (!local.postgres_id && !remoteIds.has(String(local.id))) merged.push(local);
+  }
+
+  res.json(merged);
 });
 
 /* =====================================================
@@ -268,16 +332,120 @@ const deleteItem = asyncHandler(async (req, res) => {
 ===================================================== */
 
 const createStockMovement = asyncHandler(async (req, res) => {
-  const { itemId, movementType, quantity } = req.body;
+  const { adminId, storeId } = getTenant(req);
+  const { itemId, movementType } = req.body;
+  const amount = Number(req.body.quantity);
+  const movementId = req.body.movementId || crypto.randomUUID();
+  const allowedTypes = ["receive", "adjustment", "damage", "return"];
 
-  await sqlite.run(
-    `INSERT INTO stock_movements
-     (itemId, movementType, quantity)
-     VALUES (?, ?, ?)`,
-    [itemId, movementType, quantity]
+  if (!itemId || !allowedTypes.includes(movementType) || !Number.isFinite(amount) ||
+      (movementType === "adjustment" ? amount === 0 : amount <= 0)) {
+    res.status(400);
+    throw new Error("Provide an item, a valid movement type, and a positive quantity");
+  }
+  if (!/^[0-9a-f-]{36}$/i.test(movementId)) {
+    res.status(400);
+    throw new Error("Movement ID must be a UUID");
+  }
+
+  const existing = sqlite.get(
+    `SELECT * FROM stock_movements WHERE movementId = ? AND adminId = ? AND storeId = ?`,
+    [movementId, adminId, storeId]
+  );
+  if (existing) return res.json({ success: true, movementId, replayed: true });
+
+  let item = sqlite.get(
+    `SELECT * FROM local_items
+     WHERE (CAST(id AS TEXT) = ? OR postgres_id = ? OR sku = ?)
+       AND adminId = ? AND storeId = ? AND deleted = 0 LIMIT 1`,
+    [String(itemId), String(itemId), String(itemId), adminId, storeId]
   );
 
-  res.json({ success: true });
+  if (!item && await isOnline()) {
+    const remote = await query(
+      `SELECT id, sku, name, retail_price, wholesale_price, quantity, unit
+       FROM items WHERE id::text = $1 AND admin_id::text = $2 AND store_id::text = $3
+         AND COALESCE(deleted, false) = false LIMIT 1`,
+      [String(itemId), String(adminId), String(storeId)]
+    );
+    if (remote.rows.length) {
+      const row = remote.rows[0];
+      sqlite.run(
+        `INSERT INTO local_items (postgres_id, sku, name, retail_price, wholesale_price,
+          cost_price, quantity, stock_unit, adminId, storeId, syncStatus)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')`,
+        [String(row.id), row.sku, row.name, Number(row.retail_price || 0),
+          Number(row.wholesale_price || 0), Number(row.wholesale_price || 0),
+          Number(row.quantity || 0), row.unit || "pcs", adminId, storeId]
+      );
+      item = sqlite.get(
+        `SELECT * FROM local_items WHERE postgres_id = ? AND adminId = ? AND storeId = ?`,
+        [String(row.id), adminId, storeId]
+      );
+    }
+  }
+
+  if (!item) {
+    res.status(404);
+    throw new Error("Item not found in this store");
+  }
+
+  const delta = movementType === "damage" ? -amount : amount;
+  const unitCost = req.body.unitCost == null ? null : Number(req.body.unitCost);
+  if (movementType === "receive" && unitCost != null && (!Number.isFinite(unitCost) || unitCost < 0)) {
+    res.status(400);
+    throw new Error("Unit cost must be zero or greater");
+  }
+
+  sqlite.transaction(() => {
+    const duplicate = sqlite.get(
+      `SELECT id FROM stock_movements WHERE movementId = ?`, [movementId]
+    );
+    if (duplicate) return;
+
+    const oldQuantity = Number(item.quantity);
+    const newQuantity = oldQuantity + delta;
+    if (newQuantity < 0) {
+      res.status(409);
+      throw new Error("Stock adjustment cannot make inventory negative");
+    }
+
+    let newCost = Number(item.cost_price || item.wholesale_price || 0);
+    if (movementType === "receive" && unitCost != null && newQuantity > 0) {
+      newCost = (oldQuantity * newCost + amount * unitCost) / newQuantity;
+    }
+
+    const changed = sqlite.run(
+      `UPDATE local_items SET quantity = ?, cost_price = ?, updatedAt = CURRENT_TIMESTAMP,
+        syncStatus = 'pending' WHERE id = ? AND adminId = ? AND storeId = ?`,
+      [newQuantity, newCost, item.id, adminId, storeId]
+    );
+    if (changed.changes !== 1) throw new Error("Inventory changed; reload and retry");
+
+    sqlite.run(
+      `INSERT INTO stock_movements (movementId, itemId, movementType, quantity,
+        unitCost, supplierName, adminId, storeId, createdBy, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [movementId, item.id, movementType, delta, unitCost,
+        req.body.supplierName || null, adminId, storeId, req.user.id,
+        req.body.notes || null]
+    );
+  });
+
+  res.status(201).json({ success: true, movementId, quantity: Number(item.quantity) + delta });
+});
+
+const getStockMovements = asyncHandler(async (req, res) => {
+  const { adminId, storeId } = getTenant(req);
+  const movements = sqlite.all(
+    `SELECT movementId, itemId, movementType, quantity, unitCost,
+        supplierName, createdBy, referenceId, notes, createdAt
+     FROM stock_movements
+     WHERE adminId = ? AND storeId = ?
+     ORDER BY createdAt DESC LIMIT 500`,
+    [adminId, storeId]
+  );
+  res.json(movements);
 });
 
 /* =====================================================
@@ -384,6 +552,7 @@ module.exports = {
   updateItem,
   deleteItem,
   createStockMovement,
+  getStockMovements,
   importItemsFromCSV,
   erpSync,
   processEdi850,

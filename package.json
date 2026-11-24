@@ -6,7 +6,7 @@
   "author": "Clement DevTech",
   "description": "SmartStock POS – Offline-first inventory & sales system",
   "engines": {
-    "node": ">=20.11.0"
+    "node": "^20.11.0 || ^22.0.0 || ^23.0.0 || ^24.0.0 || ^25.0.0"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
@@ -126,5 +126,9 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist"
     }
+  },
+  "allowScripts": {
+    "electron@40.8.5": true,
+    "better-sqlite3@12.8.0": true
   }
 }

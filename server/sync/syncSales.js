@@ -1,234 +1,91 @@
-const db = require("../sqlite");
-const { query } = require("../config/db");
+const defaultQuery = (...args) => require("../config/db").query(...args);
 
-/* =====================================================
-   🔧 CONFIG
-===================================================== */
 const MAX_RETRIES = 5;
 
-/* =====================================================
-   🧠 SAFE JSON PARSER
-===================================================== */
-function safeParseJSON(value) {
+async function ensureCloudTable(queryFn) {
+  await queryFn(`
+    CREATE TABLE IF NOT EXISTS smartstock_sales (
+      sale_id TEXT PRIMARY KEY,
+      receipt_no TEXT NOT NULL,
+      items JSONB NOT NULL,
+      subtotal NUMERIC NOT NULL,
+      discount_amount NUMERIC NOT NULL,
+      tax_rate NUMERIC NOT NULL,
+      tax NUMERIC NOT NULL,
+      total NUMERIC NOT NULL,
+      cost_of_goods NUMERIC NOT NULL,
+      gross_profit NUMERIC NOT NULL,
+      currency CHAR(3) NOT NULL,
+      payment_method TEXT NOT NULL,
+      payment_status TEXT NOT NULL,
+      amount_paid NUMERIC NOT NULL,
+      customer_name TEXT NOT NULL,
+      cashier_id TEXT,
+      admin_id TEXT NOT NULL,
+      store_id TEXT NOT NULL,
+      sale_date TIMESTAMPTZ NOT NULL,
+      voided BOOLEAN NOT NULL DEFAULT FALSE,
+      synced_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+}
+
+async function syncOfflineSales({ database, queryFn = defaultQuery } = {}) {
   try {
-    if (!value) return [];
-    if (typeof value === "object") return value;
-    return JSON.parse(value);
+    await queryFn("SELECT 1");
+    await ensureCloudTable(queryFn);
   } catch {
-    return [];
-  }
-}
-
-async function ensureColumn(table, column, type) {
-  const cols = await db.all(`PRAGMA table_info(${table})`);
-  const exists = cols.some(c => c.name === column);
-
-  if (!exists) {
-    console.warn(`🛠 Adding missing column: ${table}.${column}`);
-    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
-}
-
-async function healOfflineSalesSchema() {
-  await ensureColumn("offline_sales", "retryCount", "INTEGER DEFAULT 0");
-  await ensureColumn("offline_sales", "syncStatus", "TEXT DEFAULT 'pending'");
-  await ensureColumn("offline_sales", "syncedAt", "TEXT");
-  await ensureColumn("offline_sales", "postgresId", "TEXT");
-}
-
-/* =====================================================
-   ⏱ EXPONENTIAL BACKOFF
-===================================================== */
-function backoff(retryCount = 0) {
-  return Math.min(2 ** retryCount * 1000, 30000);
-}
-
-
-/* =====================================================
-   🧠 SAFE JSON PARSER
-===================================================== */
-function safeParseJSON(value) {
-  try {
-    if (!value) return [];
-    if (typeof value === "object") return value;
-    return JSON.parse(value);
-  } catch {
-    return [];
-  }
-}
-
-/* =====================================================
-   ⏱ BACKOFF
-===================================================== */
-function backoff(retryCount = 0) {
-  return Math.min(2 ** retryCount * 1000, 30000);
-}
-
-/* =====================================================
-   🛠 SCHEMA HEALER
-===================================================== */
-async function ensureColumn(table, column, type) {
-  const cols = await db.all(`PRAGMA table_info(${table})`);
-  const exists = cols.some(c => c.name === column);
-
-  if (!exists) {
-    console.warn(`🛠 Adding missing column: ${table}.${column}`);
-    await db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  }
-}
-
-async function healOfflineSalesSchema() {
-  await ensureColumn("offline_sales", "retryCount", "INTEGER DEFAULT 0");
-  await ensureColumn("offline_sales", "syncStatus", "TEXT DEFAULT 'pending'");
-  await ensureColumn("offline_sales", "syncedAt", "TEXT");
-  await ensureColumn("offline_sales", "postgresId", "TEXT");
-}
-
-/* =====================================================
-   🔁 SYNC OFFLINE SALES → POSTGRES
-===================================================== */
-async function syncOfflineSales() {
-  /* 🔥 0️⃣ AUTO-HEAL SCHEMA */
-  await healOfflineSalesSchema();
-
-  /* 1️⃣ Check connectivity */
-  try {
-    await query("SELECT 1");
-  } catch {
-    console.log("⚠️ Supabase offline — skipping sales sync");
     return;
   }
 
-  /* 2️⃣ Fetch pending sales */
-  let pendingSales;
+  const localDb = database || require("../sqlite");
+  const pending = localDb.all(`
+    SELECT * FROM offline_sales
+    WHERE syncStatus = 'pending'
+      AND COALESCE(retryCount, 0) < ?
+    ORDER BY createdAt ASC
+    LIMIT 100
+  `, [MAX_RETRIES]);
 
-  try {
-    pendingSales = await db.all(`
-      SELECT *
-      FROM offline_sales
-      WHERE syncStatus = 'pending'
-        AND (retryCount IS NULL OR retryCount < ${MAX_RETRIES})
-      ORDER BY createdAt ASC
-    `);
-  } catch (err) {
-    console.error("❌ Failed reading offline_sales:", err.message);
-    return;
-  }
-
-  if (!pendingSales.length) return;
-
-  console.log(`🔄 Syncing ${pendingSales.length} sale(s) → Supabase`);
-
-  /* 3️⃣ Process each sale */
-  for (const sale of pendingSales) {
+  for (const sale of pending) {
     try {
-      /* 🧠 SAFE PARSE */
-      const items = safeParseJSON(sale.items);
-
-      /* 🚫 SKIP CORRUPTED SALES */
+      const items = JSON.parse(sale.items || "[]");
       if (!Array.isArray(items) || items.length === 0) {
-        console.warn("⚠️ Invalid sale items. Marking as failed:", sale.id);
-
-        await db.run(
-          `
-          UPDATE offline_sales
-          SET syncStatus = 'failed'
-          WHERE id = ?
-          `,
-          [sale.id]
-        );
-
-        continue;
+        throw new Error("Sale has no valid item snapshots");
       }
 
-      /* 🚀 INSERT INTO POSTGRES */
-      const result = await query(
-        `
-        INSERT INTO sales (
-          items,
-          total_amount,
-          total_profit,
-          payment_status,
-          customer_name,
-          sale_date,
-          admin_id,
-          store_id,
-          created_by
+      await queryFn(`
+        INSERT INTO smartstock_sales (
+          sale_id, receipt_no, items, subtotal, discount_amount, tax_rate, tax,
+          total, cost_of_goods, gross_profit, currency, payment_method,
+          payment_status, amount_paid, customer_name, cashier_id, admin_id,
+          store_id, sale_date, voided
+        ) VALUES (
+          $1,$2,$3::jsonb,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
         )
-        VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9
-        )
-        RETURNING id
-        `,
-        [
-          JSON.stringify(items),
-          Number(sale.total || 0),
-          0,
-          sale.paymentStatus || "paid",
-          sale.customerName || "Walk-in Customer",
-          sale.createdAt,
-          sale.adminId,
-          sale.storeId,
-          sale.cashierId || sale.adminId
-        ]
-      );
+        ON CONFLICT (sale_id) DO UPDATE SET voided = EXCLUDED.voided
+      `, [
+        sale.saleId, sale.receiptNo, JSON.stringify(items), sale.subtotal,
+        sale.discountAmount, sale.taxRate, sale.tax, sale.total,
+        sale.costOfGoods, sale.grossProfit, sale.currency, sale.paymentMethod,
+        sale.paymentStatus, sale.amountPaid, sale.customerName, sale.cashierId,
+        sale.adminId, sale.storeId, sale.createdAt, Boolean(sale.deleted),
+      ]);
 
-      const postgresId = result.rows[0].id;
-
-      /* ✅ MARK AS SYNCED */
-      await db.run(
-        `
+      localDb.run(`
         UPDATE offline_sales
-        SET
-          syncStatus = 'synced',
-          syncedAt = CURRENT_TIMESTAMP,
-          postgresId = ?,
-          retryCount = 0
+        SET syncStatus = 'synced', syncedAt = CURRENT_TIMESTAMP,
+            postgresId = saleId, retryCount = 0
         WHERE id = ?
-        `,
-        [postgresId, sale.id]
-      );
-
-      console.log(`✅ Sale synced → ${postgresId}`);
-
+      `, [sale.id]);
     } catch (err) {
-      console.error(
-        `❌ Failed to sync sale ${sale.receiptNo || sale.id}:`,
-        err.message
-      );
-
-      /* 🔁 RETRY */
-      try {
-        await db.run(
-          `
-          UPDATE offline_sales
-          SET retryCount = COALESCE(retryCount, 0) + 1
-          WHERE id = ?
-          `,
-          [sale.id]
-        );
-      } catch (e) {
-        console.error("❌ Retry update failed:", e.message);
-      }
-
-      /* 🛑 STOP AFTER MAX RETRIES */
-      if ((sale.retryCount || 0) + 1 >= MAX_RETRIES) {
-        console.warn("🚫 Max retries reached. Marking as failed:", sale.id);
-
-        await db.run(
-          `
-          UPDATE offline_sales
-          SET syncStatus = 'failed'
-          WHERE id = ?
-          `,
-          [sale.id]
-        );
-      }
-
-      /* ⏱ BACKOFF */
-      await new Promise((r) =>
-        setTimeout(r, backoff(sale.retryCount))
-      );
+      const retries = Number(sale.retryCount || 0) + 1;
+      localDb.run(`
+        UPDATE offline_sales
+        SET retryCount = ?, syncStatus = ?
+        WHERE id = ?
+      `, [retries, retries >= MAX_RETRIES ? "failed" : "pending", sale.id]);
+      console.error(`Sale sync failed for ${sale.saleId}:`, err.message);
     }
   }
 }

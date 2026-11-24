@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ShoppingCart,
   PlusCircle,
@@ -18,13 +18,14 @@ const Sales = () => {
   const [selectedItem, setSelectedItem] = useState("");
   const [quantity, setQuantity] = useState(1);
   const [discount, setDiscount] = useState(0);
-  const [tax, setTax] = useState(16);
+  const [tax, setTax] = useState(0);
   const [customer, setCustomer] = useState("");
   const [cart, setCart] = useState([]);
   const [toast, setToast] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const storeId = localStorage.getItem("storeId");
+  const saleRequestId = useRef(null);
 
   // ================= FETCH DATA =================
   const fetchData = async () => {
@@ -61,7 +62,7 @@ const Sales = () => {
         ? existing.quantity + quantity
         : quantity;
 
-      if (newQuantity > item.stock) {
+      if (newQuantity > Number(item.quantity ?? item.stock ?? 0)) {
         setToast({
           message: `Not enough stock for ${item.name}`,
           type: "warning",
@@ -83,7 +84,7 @@ const Sales = () => {
           id: item.id,
           name: item.name,
           unitPrice: item.retailPrice,
-          costPrice: item.wholesalePrice,
+          costPrice: item.costPrice ?? item.cost_price ?? item.wholesalePrice ?? item.wholesale_price ?? 0,
           quantity,
         },
       ];
@@ -106,9 +107,9 @@ const Sales = () => {
     const newQty = Number(value);
     if (newQty <= 0) return;
 
-    if (newQty > item.stock) {
+    if (newQty > Number(item.quantity ?? item.stock ?? 0)) {
       setToast({
-        message: `Only ${item.stock} in stock`,
+        message: `Only ${item.quantity ?? item.stock ?? 0} in stock`,
         type: "warning",
       });
       return;
@@ -126,18 +127,6 @@ const Sales = () => {
     () =>
       cart.reduce(
         (sum, item) => sum + item.unitPrice * item.quantity,
-        0
-      ),
-    [cart]
-  );
-
-  const totalProfit = useMemo(
-    () =>
-      cart.reduce(
-        (sum, item) =>
-          sum +
-          (item.unitPrice - item.costPrice) *
-            item.quantity,
         0
       ),
     [cart]
@@ -163,13 +152,14 @@ const Sales = () => {
 
     try {
       await api("/api/sales", "POST", {
-        storeId,
+        saleId: saleRequestId.current || (saleRequestId.current = crypto.randomUUID()),
         customerName: customer,
-        items: cart,
-        discount,
-        tax,
-        totalAmount: grandTotal,
-        profit: totalProfit,
+        items: cart.map((item) => ({ itemId: item.id, quantity: item.quantity })),
+        discountAmount,
+        taxRate: tax / 100,
+        currency: "KES",
+        paymentMethod: "cash",
+        amountPaid: grandTotal,
       });
 
       setToast({ message: "Sale completed", type: "success" });
@@ -177,7 +167,8 @@ const Sales = () => {
       setCart([]);
       setCustomer("");
       setDiscount(0);
-      setTax(16);
+      setTax(0);
+      saleRequestId.current = null;
       setShowModal(false);
       fetchData();
     } catch {
@@ -280,8 +271,8 @@ const Sales = () => {
           >
             <option value="">Select item</option>
             {filteredItems.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} — ksh{i.retailPrice} ({i.stock})
+                <option key={i.id} value={i.id}>
+                {i.name} — ksh{i.retailPrice ?? i.retail_price} ({i.quantity ?? i.stock})
               </option>
             ))}
           </select>

@@ -2,13 +2,16 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 
-const isElectron = !!process.versions.electron;
-
 /* =====================================================
    WRITEABLE APP DATA DIRECTORY
 ===================================================== */
 
 function getAppDataDir() {
+  if (process.env.SMARTSTOCK_APP_DATA) return process.env.SMARTSTOCK_APP_DATA;
+  if (process.env.APP_DATA && process.env.ELECTRON_RUN !== "true") {
+    return process.env.APP_DATA;
+  }
+
   const appName = "SmartStockPOS";
 
   if (process.platform === "win32") {
@@ -38,46 +41,24 @@ if (!fs.existsSync(DATA_DIR)) {
    DATABASE INIT
 ===================================================== */
 
-let db;
-let rawDb;
+const BetterSqlite3 = process.versions.electron || process.env.ELECTRON_RUN === "true"
+  ? require(require.resolve("better-sqlite3", {
+    paths: [path.resolve(__dirname, "..", "node_modules")],
+  }))
+  : require("better-sqlite3");
+const rawDb = new BetterSqlite3(DB_PATH);
+rawDb.pragma("journal_mode = WAL");
+rawDb.pragma("foreign_keys = ON");
+rawDb.pragma("synchronous = NORMAL");
 
-if (isElectron) {
-  const BetterSqlite3 = require("better-sqlite3");
-
-  rawDb = new BetterSqlite3(DB_PATH);
-  rawDb.pragma("journal_mode = WAL");
-  rawDb.pragma("foreign_keys = ON");
-  rawDb.pragma("synchronous = NORMAL");
-
-  console.log("📦 SQLite initialized (Electron):", DB_PATH);
-
-} else {
-  const sqlite3 = require("sqlite3").verbose();
-
-  rawDb = new sqlite3.Database(DB_PATH, err => {
-    if (err) throw err;
-  });
-
-  rawDb.serialize(() => {
-    rawDb.run("PRAGMA journal_mode = WAL");
-    rawDb.run("PRAGMA foreign_keys = ON");
-  });
-
-  console.log("📦 SQLite initialized (Web):", DB_PATH);
-}
+console.log("SQLite initialized:", DB_PATH);
 
 /* =====================================================
    EXEC WRAPPER
 ===================================================== */
 
 function exec(sql) {
-  if (isElectron) {
-    rawDb.exec(sql);
-  } else {
-    rawDb.exec
-      ? rawDb.exec(sql)
-      : rawDb.serialize(() => rawDb.run(sql));
-  }
+  rawDb.exec(sql);
 }
 
 /* =====================================================
@@ -218,17 +199,29 @@ CREATE TABLE IF NOT EXISTS recipes (
 CREATE TABLE IF NOT EXISTS offline_sales (
   id INTEGER PRIMARY KEY,
   postgresId TEXT,
+  saleId TEXT,
   receiptNo TEXT UNIQUE,
+  items TEXT NOT NULL DEFAULT '[]',
   subtotal REAL,
+  discountAmount REAL DEFAULT 0,
+  taxRate REAL DEFAULT 0,
   tax REAL,
   total REAL,
+  costOfGoods REAL DEFAULT 0,
+  grossProfit REAL DEFAULT 0,
+  currency TEXT DEFAULT 'KES',
   paymentType TEXT,
+  paymentMethod TEXT DEFAULT 'cash',
   paymentStatus TEXT DEFAULT 'paid',
+  amountPaid REAL DEFAULT 0,
+  customerName TEXT,
   cashierId TEXT,
   storeId TEXT,
   adminId TEXT,
   version INTEGER DEFAULT 1,
+  retryCount INTEGER DEFAULT 0,
   syncStatus TEXT DEFAULT 'pending',
+  deleted INTEGER DEFAULT 0,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
   syncedAt TEXT
 );
@@ -237,9 +230,13 @@ CREATE TABLE IF NOT EXISTS sale_items (
   id INTEGER PRIMARY KEY,
   saleId INTEGER NOT NULL,
   itemId INTEGER NOT NULL,
+  itemName TEXT,
+  sku TEXT,
   quantity REAL NOT NULL,
   unitPrice REAL NOT NULL,
+  costPrice REAL DEFAULT 0,
   totalPrice REAL NOT NULL,
+  totalCost REAL DEFAULT 0,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -248,12 +245,81 @@ CREATE TABLE IF NOT EXISTS sale_items (
 ========================= */
 CREATE TABLE IF NOT EXISTS stock_movements (
   id INTEGER PRIMARY KEY,
+  movementId TEXT,
   itemId INTEGER NOT NULL,
   movementType TEXT NOT NULL,
   quantity REAL NOT NULL,
+  unitCost REAL,
+  supplierName TEXT,
+  adminId TEXT,
+  storeId TEXT,
+  createdBy TEXT,
   referenceId INTEGER,
   notes TEXT,
   createdAt TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY,
+  adminId TEXT NOT NULL,
+  storeId TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'info',
+  readAt TEXT,
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS local_expenses (
+  id TEXT PRIMARY KEY,
+  expenseType TEXT NOT NULL,
+  name TEXT NOT NULL,
+  amount REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'KES',
+  dueDate TEXT,
+  paidAt TEXT,
+  paymentMethod TEXT,
+  supplierName TEXT,
+  isRecurring INTEGER NOT NULL DEFAULT 0,
+  recurrenceInterval TEXT,
+  nextDueDate TEXT,
+  parentExpenseId TEXT,
+  periodKey TEXT,
+  notes TEXT,
+  storeId TEXT NOT NULL,
+  adminId TEXT NOT NULL,
+  createdBy TEXT,
+  syncStatus TEXT NOT NULL DEFAULT 'pending',
+  createdAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updatedAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS supplier_payments (
+  id TEXT PRIMARY KEY,
+  supplierName TEXT NOT NULL,
+  amount REAL NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'KES',
+  paymentMethod TEXT NOT NULL,
+  reference TEXT,
+  paidAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  notes TEXT,
+  storeId TEXT NOT NULL,
+  adminId TEXT NOT NULL,
+  createdBy TEXT,
+  syncStatus TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE TABLE IF NOT EXISTS customer_receipts (
+  id TEXT PRIMARY KEY,
+  saleId TEXT NOT NULL,
+  amount REAL NOT NULL,
+  paymentMethod TEXT NOT NULL,
+  reference TEXT,
+  paidAt TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  storeId TEXT NOT NULL,
+  adminId TEXT NOT NULL,
+  createdBy TEXT,
+  syncStatus TEXT NOT NULL DEFAULT 'pending'
 );
 
 /* =========================
@@ -309,66 +375,100 @@ CREATE TABLE IF NOT EXISTS z_reports (
 
 `);
 
+const migrations = {
+  offline_sales: {
+    saleId: "TEXT",
+    items: "TEXT NOT NULL DEFAULT '[]'",
+    discountAmount: "REAL DEFAULT 0",
+    taxRate: "REAL DEFAULT 0",
+    costOfGoods: "REAL DEFAULT 0",
+    grossProfit: "REAL DEFAULT 0",
+    currency: "TEXT DEFAULT 'KES'",
+    paymentMethod: "TEXT DEFAULT 'cash'",
+    amountPaid: "REAL DEFAULT 0",
+    customerName: "TEXT",
+    retryCount: "INTEGER DEFAULT 0",
+    deleted: "INTEGER DEFAULT 0",
+    updatedAt: "TEXT",
+  },
+  sale_items: {
+    itemName: "TEXT",
+    sku: "TEXT",
+    costPrice: "REAL DEFAULT 0",
+    totalCost: "REAL DEFAULT 0",
+  },
+  stock_movements: {
+    movementId: "TEXT",
+    unitCost: "REAL",
+    supplierName: "TEXT",
+    adminId: "TEXT",
+    storeId: "TEXT",
+    createdBy: "TEXT",
+  },
+  local_expenses: {
+    parentExpenseId: "TEXT",
+    periodKey: "TEXT",
+  },
+};
+
+for (const [table, columns] of Object.entries(migrations)) {
+  const existingColumns = new Set(rawDb.pragma(`table_info(${table})`).map(({ name }) => name));
+  for (const [column, definition] of Object.entries(columns)) {
+    if (!existingColumns.has(column)) {
+      rawDb.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
+  }
+}
+
+rawDb.exec(`
+  UPDATE offline_sales
+  SET saleId = COALESCE(saleId, receiptNo, 'legacy-' || id),
+      items = CASE
+        WHEN items IS NULL OR items = '[]' THEN COALESCE((
+          SELECT json_group_array(json_object(
+            'itemId', si.itemId,
+            'name', si.itemName,
+            'sku', si.sku,
+            'quantity', si.quantity,
+            'unitPrice', si.unitPrice,
+            'costPrice', si.costPrice,
+            'total', si.totalPrice,
+            'totalCost', si.totalCost
+          ))
+          FROM sale_items si WHERE si.saleId = offline_sales.id
+        ), '[]')
+        ELSE items
+      END,
+      updatedAt = COALESCE(updatedAt, createdAt)
+  WHERE saleId IS NULL OR items IS NULL OR items = '[]' OR updatedAt IS NULL
+`);
+rawDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_offline_sales_sale_id ON offline_sales(saleId)");
+rawDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_movements_movement_id ON stock_movements(movementId) WHERE movementId IS NOT NULL");
+rawDb.exec("CREATE INDEX IF NOT EXISTS idx_notifications_tenant_date ON notifications(adminId, storeId, createdAt)");
+rawDb.exec("CREATE INDEX IF NOT EXISTS idx_expenses_tenant_date ON local_expenses(adminId, storeId, dueDate)");
+rawDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_period ON local_expenses(parentExpenseId, periodKey) WHERE parentExpenseId IS NOT NULL AND periodKey IS NOT NULL");
+rawDb.exec("CREATE INDEX IF NOT EXISTS idx_supplier_payments_tenant_date ON supplier_payments(adminId, storeId, paidAt)");
+rawDb.exec("CREATE INDEX IF NOT EXISTS idx_customer_receipts_sale ON customer_receipts(adminId, storeId, saleId)");
+
 /* =====================================================
    DB WRAPPER
 ===================================================== */
 
 db = {
   run(sql, params = []) {
-    if (isElectron) {
-      return rawDb.prepare(sql).run(params);
-    }
-
-    return new Promise((resolve, reject) => {
-      rawDb.run(sql, params, function (err) {
-        if (err) reject(err);
-        else resolve(this);
-      });
-    });
+    return rawDb.prepare(sql).run(params);
   },
 
   get(sql, params = []) {
-    if (isElectron) {
-      return rawDb.prepare(sql).get(params);
-    }
-
-    return new Promise((resolve, reject) => {
-      rawDb.get(sql, params, (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+    return rawDb.prepare(sql).get(params);
   },
 
   all(sql, params = []) {
-    if (isElectron) {
-      return rawDb.prepare(sql).all(params);
-    }
-
-    return new Promise((resolve, reject) => {
-      rawDb.all(sql, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+    return rawDb.prepare(sql).all(params);
   },
 
   transaction(fn) {
-    if (isElectron) {
-      return rawDb.transaction(fn)();
-    }
-
-    return new Promise(async (resolve, reject) => {
-      try {
-        await db.run("BEGIN");
-        await fn();
-        await db.run("COMMIT");
-        resolve();
-      } catch (e) {
-        await db.run("ROLLBACK");
-        reject(e);
-      }
-    });
+    return rawDb.transaction(fn)();
   },
 
   raw: rawDb

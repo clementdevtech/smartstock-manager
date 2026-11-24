@@ -7,6 +7,8 @@ const {
   getSales,
   getSaleById,
   getDailySummary,
+  getReceivables,
+  addSaleReceipt,
   deleteSale,
 } = require('../controllers/salesController');
 
@@ -17,6 +19,10 @@ router.route('/')
 
 router.route('/summary/daily')
   .get(protect, getDailySummary);
+
+router.get('/receivables', protect, getReceivables);
+
+router.post('/:saleId/receipts', protect, addSaleReceipt);
 
 router.route('/:id')
   .get(protect, getSaleById)

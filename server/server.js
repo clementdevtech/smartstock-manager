@@ -39,13 +39,23 @@ process.env.APP_DATA = APP_DATA;
 ===================================================== */
 const app = express();
 
+const configuredOrigins = (process.env.CLIENT_ORIGIN || (isElectron ? "http://localhost:5173" : ""))
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 /* =====================================================
    MIDDLEWARE
 ===================================================== */
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN || "*",
-    credentials: true
+    origin(origin, callback) {
+      if (!origin || configuredOrigins.includes(origin) || (isElectron && origin === "null")) {
+        return callback(null, true);
+      }
+      return callback(null, false);
+    },
+    credentials: true,
   })
 );
 

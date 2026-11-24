@@ -168,7 +168,6 @@ exports.validateProductKey = async (req, res) => {
   console.log("Validating product key");
   try {
     const key = req.query.productKey;
-    console.log("key:", key);
 
     const result = await query(
       `SELECT 1 FROM product_keys WHERE key = $1 AND used = false`,

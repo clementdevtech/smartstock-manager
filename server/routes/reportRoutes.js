@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const {
+  financialSummary,
   balanceSheet,
   cashVsCredit,
   employeeExpenseReport,
@@ -16,6 +17,7 @@ const { protect } = require("../middleware/authMiddleware");
 
 /* ===================== REPORT ROUTES ===================== */
 
+router.get("/financial", protect, financialSummary);
 router.get("/balance-sheet", protect, balanceSheet);
 router.get("/cash-vs-credit", protect, cashVsCredit);
 router.get("/employees", protect, employeeExpenseReport);

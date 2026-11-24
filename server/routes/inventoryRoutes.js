@@ -9,6 +9,7 @@ const {
   updateItem,
   deleteItem,
   createStockMovement,
+  getStockMovements,
   erpSync,
   processEdi850,
   importItemsFromCSV,
@@ -94,6 +95,9 @@ router
 
 router.get("/scan/:sku", protect, getItemByBarcode);
 
+router.post("/stock-movements", protect, createStockMovement);
+router.get("/stock-movements", protect, getStockMovements);
+
 /* ===============================
    SINGLE ITEM
 =============================== */
@@ -107,12 +111,6 @@ router
 /* ===============================
    STOCK MOVEMENTS
 =============================== */
-
-router.post(
-  "/stock-movements",
-  protect,
-  createStockMovement
-);
 
 /* ===============================
    WEEKLY BEST ITEMS

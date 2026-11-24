@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { Menu, X, LogOut } from "lucide-react";
+import { Menu, X, LogOut, CircleHelp } from "lucide-react";
 import ToggleSwitch from "./ToggleSwitch";
 import { AuthContext } from "../context/AuthContext";
 
@@ -38,6 +38,7 @@ const Navbar = () => {
     { name: "dashboard", path: "/dashboard" },
     { name: "Inventory", path: "/inventory" },
     { name: "Sales", path: "/sales" },
+    { name: "Operations", path: "/operations" },
   ];
 
   const navLinks = user?.role === "admin"
@@ -48,6 +49,10 @@ const Navbar = () => {
     logoutUser();
     navigate("/login");
   };
+
+  // Reopen this page's guided tour (OnboardingGuide listens for this event)
+  const reopenGuide = () =>
+    window.dispatchEvent(new Event("smartstock:open-guide"));
 
   return (
     <nav className="sticky top-0 z-50 bg-white dark:bg-gray-900 shadow-md border-b border-gray-100 dark:border-gray-700">
@@ -84,6 +89,17 @@ const Navbar = () => {
 
         {/* Right Controls */}
         <div className="flex items-center gap-3">
+
+          {/* Help / Guide */}
+          <button
+            onClick={reopenGuide}
+            title="Reopen this page's guided tour"
+            aria-label="Reopen guided tour"
+            className="hidden md:flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-md transition"
+          >
+            <CircleHelp size={16} />
+            Help
+          </button>
 
           {/* Dark Mode */}
           <div className="flex items-center gap-2">
@@ -139,6 +155,16 @@ const Navbar = () => {
             </NavLink>
           ))}
 
+          <button
+            onClick={() => {
+              setIsOpen(false);
+              reopenGuide();
+            }}
+            className="w-full flex items-center gap-2 px-6 py-3 text-blue-600 hover:bg-blue-50 dark:hover:bg-gray-800 font-medium text-sm"
+          >
+            <CircleHelp size={16} /> Guide
+          </button>
+
           {user && (
             <button
               onClick={handleLogout}
@@ -152,5 +178,4 @@ const Navbar = () => {
     </nav>
   );
 };
-
 export default Navbar;

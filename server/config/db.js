@@ -9,20 +9,17 @@ let retryTimer = null;
 ===================================================== */
 async function connectDB() {
   if (!process.env.DATABASE_URL) {
-    console.warn("⚠️ DATABASE_URL not set — skipping Postgres");
-    console.log("DATABASE_URL should be in the format: postgres://user:password@host:port/database");
+    console.warn("DATABASE_URL is not set; using local SQLite only");
     return;
   }
 
   try {
     pool = new Pool({
-  user: "postgres.ydxtxwtoenjqvkhggaxk",
-  password: "smartstockapplications@", // ✅ raw (no encoding needed)
-  host: "aws-1-eu-west-1.pooler.supabase.com",
-  port: 6543,
-  database: "postgres",
-  ssl: { rejectUnauthorized: false },
-});
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.PGSSL === "disable"
+        ? false
+        : { rejectUnauthorized: process.env.PGSSL_REJECT_UNAUTHORIZED !== "false" },
+    });
 
     // 🔥 Test connection
     const client = await pool.connect();
@@ -104,7 +101,9 @@ function getPool() {
 module.exports = {
   connectDB,
   dbStatus,
-  query,    // safe wrapper
-  pool,     // exported pool (may be null until connectDB runs)
-  getPool,  // safe getter for pool
+  query,
+  getPool,
+  get pool() {
+    return pool;
+  },
 };

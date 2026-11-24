@@ -25,23 +25,15 @@ const protect = async (req, res, next) => {
   }
 
   try {
-    let decoded;
-
-    /* ===============================
-       2️⃣ TRY VERIFY (CUSTOM JWT)
-    =============================== */
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      // 🔁 fallback to decode (Supabase / external JWT)
-      decoded = jwt.decode(token);
-    }
-
-    if (!decoded) {
+    if (!process.env.JWT_SECRET) {
       return res.status(401).json({
-        message: "Invalid token",
+        message: "Authentication is not configured",
       });
     }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ["HS256"],
+    });
 
     /* ===============================
        3️⃣ NORMALIZE USER DATA
@@ -57,7 +49,10 @@ const protect = async (req, res, next) => {
     if (userId) {
       try {
         const result = await query(
-          "SELECT id, name, email, role FROM users WHERE id = $1",
+          `SELECT u.id, u.name, u.email, u.role, s.id AS "storeId"
+           FROM users u
+           LEFT JOIN stores s ON s.admin_id = u.id
+           WHERE u.id = $1`,
           [userId]
         );
 
@@ -77,9 +72,10 @@ const protect = async (req, res, next) => {
     =============================== */
     if (!user && email) {
       try {
-        const local = db.get(
-          "SELECT email, storeName AS name, 'user' AS role FROM local_users WHERE email = ?",
-          [email]
+        const local = await db.get(
+          `SELECT id, email, storeName AS name, role, storeId, adminId
+           FROM local_users WHERE email = ?`,
+          [email.toLowerCase()]
         );
 
         if (local) user = local;
@@ -88,23 +84,29 @@ const protect = async (req, res, next) => {
       }
     }
 
-    /* ===============================
-       6️⃣ FINAL FALLBACK (TOKEN ONLY)
-       👉 ensures system NEVER crashes
-    =============================== */
+    /* A verified token can authorize a cached session while Postgres is offline. */
     if (!user) {
+      if (!userId || !["admin", "user"].includes(decoded.role)) {
+        return res.status(401).json({ message: "Invalid token claims" });
+      }
       user = {
         id: userId,
         email,
-        name: "Unknown User",
-        role: "user",
+        name: decoded.name || "Offline user",
+        role: decoded.role,
+        storeId: decoded.storeId || null,
+        adminId: decoded.adminId || userId,
       };
     }
 
     /* ===============================
        7️⃣ ATTACH USER TO REQUEST
     =============================== */
-    req.user = user;
+    req.user = {
+      ...user,
+      adminId: user.adminId || user.id,
+      storeId: user.storeId || decoded.storeId || null,
+    };
 
     next();
   } catch (err) {

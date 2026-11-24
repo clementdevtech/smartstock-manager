@@ -99,9 +99,13 @@ const POS = () => {
 
   const [paymentType, setPaymentType] = useState("cash");
   const [customerCash, setCustomerCash] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [discountAmount, setDiscountAmount] = useState(0);
+  const [taxRate, setTaxRate] = useState(0);
   const [scanScore, setScanScore] = useState(null);
 
   const receiptRef = useRef();
+  const checkoutIdRef = useRef(null);
   const storeId = localStorage.getItem("storeId");
 
   /* =====================================================
@@ -251,6 +255,7 @@ const fetchItems = async () => {
   ===================================================== */
 
 const addToCart = (item, qty = null) => {
+  checkoutIdRef.current = null;
 
   const minQty = Number(item.minSaleQty || 1);
   const step = Number(item.saleStep || 1);
@@ -331,6 +336,7 @@ const addToCart = (item, qty = null) => {
   ===================================================== */
 
   const updateQty = (cartId, delta) => {
+    checkoutIdRef.current = null;
 
     setCart((prev) =>
       prev.map((i) =>
@@ -346,6 +352,7 @@ const addToCart = (item, qty = null) => {
   };
 
   const removeItem = (cartId) => {
+    checkoutIdRef.current = null;
 
     setCart((prev) =>
       prev.filter((i) => i.cartId !== cartId)
@@ -453,13 +460,13 @@ const handleScan = useCallback((raw, meta = {}) => {
 
 
 
-  const tax = subTotal * 0.16;
-  const total = subTotal;
-  const base = total - tax;
+  const discountedSubtotal = Math.max(0, subTotal - Number(discountAmount || 0));
+  const tax = discountedSubtotal * (Number(taxRate || 0) / 100);
+  const total = discountedSubtotal + tax;
 
   const change =
     paymentType === "cash"
-      ? Number(customerCash || 0) - total
+      ? Math.max(0, Number(customerCash || total) - total)
       : 0;
 
   /* =====================================================
@@ -475,42 +482,41 @@ const handleCheckout = async () => {
     return;
   }
 
+  const cashReceived = Number(customerCash || (paymentType === "cash" ? total : 0));
+  if (paymentType === "credit" && !customerName.trim()) {
+    setToast({ message: "Enter the customer name for a credit sale", type: "error" });
+    return;
+  }
   const payload = {
-    storeId,
-
-    /* 🔥 FIXED PAYLOAD */
+    saleId: checkoutIdRef.current || (checkoutIdRef.current = crypto.randomUUID()),
     items: cart.map(i => ({
       itemId: i.id,
       quantity: i.qty
     })),
-
-    total,
-    paymentType,
+    discountAmount: Number(discountAmount || 0),
+    taxRate: Number(taxRate || 0) / 100,
+    currency: "KES",
+    paymentMethod: paymentType,
+    amountPaid: paymentType === "credit"
+      ? cashReceived
+      : paymentType === "cash"
+        ? Math.min(cashReceived, total)
+        : total,
+    customerName: customerName.trim() || "Walk-in Customer",
     mode: multiScanMode ? "multi-lane" : "single"
   };
 
   try {
-
-    if (!navigator.onLine) {
-
-      window.electron?.ipcRenderer.send(
-        "offline:add-sale",
-        payload
-      );
-
-      setToast({
-        message: "Saved offline",
-        type: "warning"
-      });
-
-    } else {
-
-      await api("/api/sales", "POST", payload);
-
+    const result = await api("/api/sales", "POST", payload);
+    if (result?.unavailable || result?.offline) {
+      throw new Error(result.message || "Sale was not saved; retry checkout.");
     }
 
     setCart([]);
     setCustomerCash("");
+    setCustomerName("");
+    setDiscountAmount(0);
+    checkoutIdRef.current = null;
     fetchItems();
 
     setToast({
@@ -687,18 +693,58 @@ const handleCheckout = async () => {
 
 <div className="flex justify-between">
   <span>Subtotal</span>
-  <span>{base.toFixed(2)}</span>
+  <span>Ksh {subTotal.toFixed(2)}</span>
 </div>
 
+<label className="flex items-center justify-between gap-3 text-sm">
+  Discount (Ksh)
+  <input type="number" min="0" max={subTotal} step="0.01" value={discountAmount}
+    onChange={e => { checkoutIdRef.current = null; setDiscountAmount(Number(e.target.value)); }} className="w-24 border rounded p-1" />
+</label>
+
+<label className="flex items-center justify-between gap-3 text-sm">
+  Tax (%)
+  <input type="number" min="0" max="100" step="0.01" value={taxRate}
+    onChange={e => { checkoutIdRef.current = null; setTaxRate(Number(e.target.value)); }} className="w-24 border rounded p-1" />
+</label>
+
 <div className="flex justify-between">
-  <span>VAT (16%)</span>
-  <span>{tax.toFixed(2)}</span>
+  <span>Tax</span>
+  <span>Ksh {tax.toFixed(2)}</span>
 </div>
 
 <div className="flex justify-between font-bold">
   <span>Total</span>
-  <span>{total.toFixed(2)}</span>
+  <span>Ksh {total.toFixed(2)}</span>
 </div>
+
+<label className="block text-sm">
+  Payment method
+  <select value={paymentType} onChange={e => { checkoutIdRef.current = null; setPaymentType(e.target.value); }} className="w-full border rounded p-2 mt-1">
+    <option value="cash">Cash</option>
+    <option value="mpesa">M-Pesa</option>
+    <option value="credit">Customer credit</option>
+  </select>
+</label>
+
+{(paymentType === "cash" || paymentType === "credit") && (
+  <label className="block text-sm">
+    {paymentType === "cash" ? "Cash received (Ksh)" : "Paid now (Ksh)"}
+    <input type="number" min="0" max={total} step="0.01" value={customerCash}
+      onChange={e => { checkoutIdRef.current = null; setCustomerCash(e.target.value); }} placeholder={paymentType === "cash" ? total.toFixed(2) : "0.00"}
+      className="w-full border rounded p-2 mt-1" />
+  </label>
+)}
+
+{change > 0 && <div className="text-sm">Change due: Ksh {change.toFixed(2)}</div>}
+
+{paymentType === "credit" && (
+  <label className="block text-sm">
+    Customer name
+    <input value={customerName} onChange={e => { checkoutIdRef.current = null; setCustomerName(e.target.value); }}
+      className="w-full border rounded p-2 mt-1" required />
+  </label>
+)}
 
             {scanScore!==null && (
               <div className="text-xs text-gray-500">

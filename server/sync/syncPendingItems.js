@@ -35,10 +35,10 @@ async function ensureColumn(table, column, type = "TEXT") {
 
 function healLocalItemsSchema() {
   ensureColumn("local_items", "syncStatus", "TEXT DEFAULT 'pending'");
-  ensureColumn("local_items", "retryCount", "INTEGER DEFAULT 0");
+  ensureColumn("local_items", "retry_count", "INTEGER DEFAULT 0");
   ensureColumn("local_items", "version", "INTEGER DEFAULT 1");
   ensureColumn("local_items", "deleted", "INTEGER DEFAULT 0");
-  ensureColumn("local_items", "lastSyncedAt", "TEXT");
+  ensureColumn("local_items", "last_synced_at", "TEXT");
 }
 
 /* =====================================================
@@ -50,7 +50,7 @@ async function safeSelectPendingItems() {
       SELECT *
       FROM local_items
       WHERE syncStatus = 'pending'
-        AND retryCount < 5
+        AND COALESCE(retry_count, 0) < 5
       ORDER BY updatedAt ASC
     `);
   } catch (err) {
@@ -78,8 +78,8 @@ async function syncPendingItems() {
       sqlite.run(`
         UPDATE local_items
         SET syncStatus = 'synced',
-            retryCount = 0,
-            lastSyncedAt = CURRENT_TIMESTAMP
+            retry_count = 0,
+            last_synced_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [item.id]);
 
@@ -89,7 +89,7 @@ async function syncPendingItems() {
       try {
         sqlite.run(`
           UPDATE local_items
-          SET retryCount = retryCount + 1
+          SET retry_count = COALESCE(retry_count, 0) + 1
           WHERE id = ?
         `, [item.id]);
       } catch {
@@ -97,7 +97,7 @@ async function syncPendingItems() {
         healLocalItemsSchema();
       }
 
-      await new Promise(r => setTimeout(r, backoff(item.retryCount || 0)));
+      await new Promise(r => setTimeout(r, backoff(item.retry_count || 0)));
     }
   }
 }
@@ -109,7 +109,7 @@ async function syncSingleItem(item) {
   /* ============================
      CREATE
   ============================ */
-  if (!item.postgresId && !item.deleted) {
+  if (!item.postgres_id && !item.deleted) {
     const { rows } = await query(
   `
   INSERT INTO items (
@@ -134,23 +134,23 @@ async function syncSingleItem(item) {
     item.sku,
     item.name,
     item.category,
-    item.unit,
-    item.wholesalePrice,
-    item.retailPrice,
+    item.stock_unit || "pcs",
+    Number(item.wholesale_price || 0),
+    Number(item.retail_price || 0),
     item.quantity,
-    item.lowStockThreshold,
-    item.batchNumber,
-    item.expiryDate,
+    Number(item.low_stock_threshold || 5),
+    item.batch_number || null,
+    item.expiry_date || null,
     item.adminId,
     item.storeId,
     item.adminId,        // 🔥 created_by FIX
-    sqlite.DEVICE_ID
+    item.device_id || null
   ]
 );
 
     sqlite.run(`
       UPDATE local_items
-      SET postgresId = ?, version = ?
+      SET postgres_id = ?, version = ?
       WHERE id = ?
     `, [rows[0].id, rows[0].version, item.id]);
 
@@ -169,7 +169,7 @@ async function syncSingleItem(item) {
           last_device_id = $1
       WHERE id = $2
       `,
-      [sqlite.DEVICE_ID, item.postgresId]
+      [item.device_id || null, item.postgres_id]
     );
 
     sqlite.run(`DELETE FROM local_items WHERE id = ?`, [item.id]);
@@ -181,7 +181,7 @@ async function syncSingleItem(item) {
   ============================ */
   const { rows } = await query(
     `SELECT version FROM items WHERE id = $1`,
-    [item.postgresId]
+    [item.postgres_id]
   );
 
   if (!rows.length) {
@@ -215,10 +215,10 @@ async function syncSingleItem(item) {
     `,
     [
       item.quantity,
-      item.wholesalePrice,
-      item.retailPrice,
-      sqlite.DEVICE_ID,
-      item.postgresId,
+      Number(item.wholesale_price || 0),
+      Number(item.retail_price || 0),
+      item.device_id || null,
+      item.postgres_id,
       item.version
     ]
   );
